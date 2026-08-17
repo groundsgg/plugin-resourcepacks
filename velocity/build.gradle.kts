@@ -26,5 +26,6 @@ dependencies {
         }
     }
     testImplementation("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
+    testImplementation("org.yaml:snakeyaml:2.6")
     testImplementation(kotlin("test"))
 }

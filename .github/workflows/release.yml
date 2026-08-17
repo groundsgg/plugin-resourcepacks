@@ -1,0 +1,12 @@
+name: Release
+
+on:
+  push:
+    tags: [v*]
+
+jobs:
+  reusable:
+    permissions:
+      contents: write
+      packages: write
+    uses: groundsgg/.github/.github/workflows/gradle-publish.yml@main
