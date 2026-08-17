@@ -60,8 +60,10 @@ if overlapping targets reuse the same UUID, target attribution is reported as `u
 terminal status until the player disconnects or delivery state is cleared, rather than guessing the
 newer target.
 
-`NOT_READY` configuration does not apply defaults, create a CDN client, or send packs. The first
-valid configuration change starts exactly one client. Shutdown detaches plugin-owned listeners and
+A genuinely `NOT_READY` configuration does not apply defaults, create a CDN client, or send packs.
+After callback installation the plugin probes the latest manager value through the same serialized
+delivery path as live changes, closing the registration-to-subscription race. That probe or the
+first later valid change starts exactly one client. Shutdown detaches plugin-owned listeners and
 closes that client. Local runtime diagnostics expose client status, current and fallback
 fingerprints, and requested/accepted/downloaded/failed/declined counters. Untrusted diagnostic text
 is replaced by bounded, allowlisted reason codes.

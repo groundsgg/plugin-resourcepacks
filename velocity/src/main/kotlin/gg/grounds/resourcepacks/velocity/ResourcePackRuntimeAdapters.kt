@@ -2,6 +2,7 @@ package gg.grounds.resourcepacks.velocity
 
 import com.velocitypowered.api.proxy.Player
 import com.velocitypowered.api.proxy.ProxyServer
+import gg.grounds.config.ConfigDefinitionNotReadyException
 import gg.grounds.config.ConfigManager
 import gg.grounds.config.ConfigRegistrationResult
 import gg.grounds.config.ConfigStartupMode
@@ -31,7 +32,7 @@ internal interface ResourcePackConfigGateway {
 }
 
 internal interface ResourcePackConfigSubscription : AutoCloseable {
-    fun deliverCurrent()
+    fun deliverLatestIfAvailable()
 }
 
 internal interface ResourcePackConfigBackend {
@@ -80,7 +81,7 @@ internal class VelocityResourcePackConfigGateway(private val backend: ResourcePa
         listener: (ResourcePackSettings) -> Unit
     ): ResourcePackConfigSubscription {
         val subscription = SerializedResourcePackConfigSubscription(backend, listener)
-        backend.onChange(subscription::deliverCurrent)
+        backend.onChange(subscription::deliverLatestIfAvailable)
         return subscription
     }
 }
@@ -93,10 +94,16 @@ private class SerializedResourcePackConfigSubscription(
     private val delivery = Any()
     private val latestDelivery = AtomicLong()
 
-    override fun deliverCurrent() {
+    override fun deliverLatestIfAvailable() {
         if (activeListener.get() == null) return
         val deliveryId = latestDelivery.incrementAndGet()
-        val current = backend.current()
+        val current =
+            try {
+                backend.current()
+            } catch (failure: ConfigDefinitionNotReadyException) {
+                if (failure.definition !== ResourcePackSettingsDefinition) throw failure
+                return
+            }
         synchronized(delivery) {
             if (deliveryId == latestDelivery.get()) activeListener.get()?.invoke(current)
         }

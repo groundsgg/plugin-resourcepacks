@@ -6,6 +6,7 @@ import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
 import com.velocitypowered.api.plugin.Plugin
 import com.velocitypowered.api.proxy.Player
+import gg.grounds.config.ConfigDefinitionNotReadyException
 import gg.grounds.config.ConfigRegistrationResult
 import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
@@ -22,6 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -89,13 +91,112 @@ class GroundsResourcePacksPluginTest {
             Registration("network", "stage", ConfigStartupMode.DEGRADED),
             gateway.registration,
         )
-        assertEquals(0, gateway.currentReads)
+        assertEquals(1, gateway.currentReads)
         assertEquals(0, clients.created.size)
         assertTrue(gateway.subscribed)
         assertEquals(1, events.registered.size)
         assertFalse(log.messages.joinToString().contains("top-secret"))
         assertTrue(log.messages.single().contains("reason=unknown_failure"))
         assertNull(plugin.runtimeStatus().currentFingerprint)
+    }
+
+    // Break caught: NOT_READY can become valid after register returns but before callback
+    // installation, leaving no later notification to wake the plugin.
+    @Test
+    fun `not ready registration delivers a value that becomes current before subscription`() {
+        val latest = settings(packSet = "latest")
+        val backend =
+            FakeResourcePackConfigBackend(
+                initial = null,
+                registrationResult =
+                    ConfigRegistrationResult.notReady("bootstrap_failed_no_cached_snapshot"),
+            )
+        backend.becomeAvailableBeforeListenerInstallation(latest)
+        val clients = FakeClientFactory()
+        val log = FakeResourcePackLog()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+                VelocityResourcePackConfigGateway(backend),
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                log,
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        val client = clients.created.single()
+        assertEquals(latest.toClientSource(), client.state().source)
+        assertEquals(1, client.starts)
+        assertEquals(emptyList(), client.reconfigurations)
+        assertEquals(1, backend.currentReads)
+        assertEquals(
+            "Resource-pack configuration not ready (status=NOT_READY, " +
+                "reason=bootstrap_failed_no_cached_snapshot)",
+            log.messages.single(),
+        )
+    }
+
+    // Break caught: probing after NOT_READY must treat only the manager's precise not-ready state
+    // as an empty latest delivery and must not manufacture settings.
+    @Test
+    fun `genuinely unavailable manager remains inert after the serialized initial probe`() {
+        val backend =
+            FakeResourcePackConfigBackend(
+                initial = null,
+                registrationResult = ConfigRegistrationResult.notReady("bootstrap_unavailable"),
+            )
+        val clients = FakeClientFactory()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+                VelocityResourcePackConfigGateway(backend),
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                FakeResourcePackLog(),
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        assertEquals(1, backend.currentReads)
+        assertEquals(emptyList(), clients.created)
+        assertNull(plugin.runtimeStatus().currentFingerprint)
+    }
+
+    // Break caught: broad exception suppression can silently strand the plugin on real manager
+    // failures that are not the documented not-ready state.
+    @Test
+    fun `unexpected latest config read failure is not swallowed`() {
+        val backend =
+            FakeResourcePackConfigBackend(
+                initial = null,
+                registrationResult = ConfigRegistrationResult.notReady("bootstrap_unavailable"),
+            )
+        backend.failCurrentRead(IllegalStateException("manager_corrupt"))
+        val clients = FakeClientFactory()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+                VelocityResourcePackConfigGateway(backend),
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                FakeResourcePackLog(),
+            )
+
+        val failure =
+            assertFailsWith<IllegalStateException> { plugin.onInitialize(ProxyInitializeEvent()) }
+
+        assertEquals("manager_corrupt", failure.message)
+        assertEquals(emptyList(), clients.created)
     }
 
     // Break caught: the first valid change after NOT_READY can otherwise leave the runtime inert.
@@ -497,12 +598,19 @@ class GroundsResourcePacksPluginTest {
         )
 }
 
-internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
-    ResourcePackConfigBackend {
+internal class FakeResourcePackConfigBackend(
+    initial: ResourcePackSettings?,
+    private val registrationResult: ConfigRegistrationResult = ConfigRegistrationResult.ready(),
+) : ResourcePackConfigBackend {
     @Volatile private var current = initial
     private var listener: (() -> Unit)? = null
     private val pauseCurrentRead = AtomicBoolean(false)
     private var duringSubscription: ResourcePackSettings? = null
+    private var beforeListenerInstallation: ResourcePackSettings? = null
+    private var currentReadFailure: RuntimeException? = null
+    var currentReads = 0
+        private set
+
     val currentReadEntered = CountDownLatch(1)
     val releaseCurrentRead = CountDownLatch(1)
 
@@ -510,18 +618,21 @@ internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
         app: String,
         environment: String,
         mode: ConfigStartupMode,
-    ): ConfigRegistrationResult = ConfigRegistrationResult.ready()
+    ): ConfigRegistrationResult = registrationResult
 
     override fun current(): ResourcePackSettings {
+        currentReads += 1
+        currentReadFailure?.let { throw it }
         val captured = current
         if (pauseCurrentRead.compareAndSet(true, false)) {
             currentReadEntered.countDown()
             releaseCurrentRead.await(1, TimeUnit.SECONDS)
         }
-        return captured
+        return captured ?: throw ConfigDefinitionNotReadyException(ResourcePackSettingsDefinition)
     }
 
     override fun onChange(listener: () -> Unit) {
+        beforeListenerInstallation?.let { current = it }
         this.listener = listener
         duringSubscription?.let {
             current = it
@@ -535,6 +646,14 @@ internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
 
     fun publishDuringSubscription(settings: ResourcePackSettings) {
         duringSubscription = settings
+    }
+
+    fun becomeAvailableBeforeListenerInstallation(settings: ResourcePackSettings) {
+        beforeListenerInstallation = settings
+    }
+
+    fun failCurrentRead(failure: RuntimeException) {
+        currentReadFailure = failure
     }
 
     fun captureChange(settings: ResourcePackSettings): () -> Unit {
@@ -584,8 +703,9 @@ internal class FakeConfigGateway(
         subscribed = true
         this.listener = listener
         return object : ResourcePackConfigSubscription {
-            override fun deliverCurrent() {
-                listener(current())
+            override fun deliverLatestIfAvailable() {
+                currentReads += 1
+                current?.let(listener)
             }
 
             override fun close() {

@@ -93,14 +93,13 @@ internal constructor(
             )
         val subscription = configGateway.onChange(::applySettings)
         configListener = subscription
-        if (result.isUsable()) {
-            subscription.deliverCurrent()
-        } else {
+        if (!result.isUsable()) {
             log.warn(
                 "Resource-pack configuration not ready (status=${result.status}, " +
                     "reason=${normalizeDiagnosticReason(result.reason)})"
             )
         }
+        subscription.deliverLatestIfAvailable()
     }
 
     @Subscribe
