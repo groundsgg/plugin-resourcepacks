@@ -55,7 +55,10 @@ pack's UUID, URI and SHA-1 together with the configured prompt and required flag
 source-matched READY snapshot or source-matched DEGRADED fallback, suppresses duplicate
 fingerprints per player, resends after a packset or delivery-setting change, and removes that record
 on disconnect. A source change reconfigures the same client; it never offers the retained fallback
-from the old source.
+from the old source. Velocity status events identify a pack UUID but not the request that sent it;
+if overlapping targets reuse the same UUID, target attribution is reported as `unknown` even for a
+terminal status until the player disconnects or delivery state is cleared, rather than guessing the
+newer target.
 
 `NOT_READY` configuration does not apply defaults, create a CDN client, or send packs. The first
 valid configuration change starts exactly one client. Shutdown detaches plugin-owned listeners and

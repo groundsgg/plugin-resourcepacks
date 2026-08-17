@@ -11,6 +11,7 @@ import gg.grounds.resourcepacks.client.PackSetClientConfig
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetSource
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.slf4j.Logger
 
@@ -26,9 +27,11 @@ internal interface ResourcePackConfigGateway {
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult
 
-    fun current(): ResourcePackSettings
+    fun onChange(listener: (ResourcePackSettings) -> Unit): ResourcePackConfigSubscription
+}
 
-    fun onChange(listener: (ResourcePackSettings) -> Unit): AutoCloseable
+internal interface ResourcePackConfigSubscription : AutoCloseable {
+    fun deliverCurrent()
 }
 
 internal interface ResourcePackConfigBackend {
@@ -73,15 +76,34 @@ internal class VelocityResourcePackConfigGateway(private val backend: ResourcePa
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult = backend.register(app, environment, mode)
 
-    override fun current(): ResourcePackSettings = backend.current()
+    override fun onChange(
+        listener: (ResourcePackSettings) -> Unit
+    ): ResourcePackConfigSubscription {
+        val subscription = SerializedResourcePackConfigSubscription(backend, listener)
+        backend.onChange(subscription::deliverCurrent)
+        return subscription
+    }
+}
 
-    override fun onChange(listener: (ResourcePackSettings) -> Unit): AutoCloseable {
-        val activeListener = AtomicReference<(ResourcePackSettings) -> Unit>(listener)
-        val delivery = Any()
-        backend.onChange {
-            synchronized(delivery) { activeListener.get()?.invoke(backend.current()) }
+private class SerializedResourcePackConfigSubscription(
+    private val backend: ResourcePackConfigBackend,
+    listener: (ResourcePackSettings) -> Unit,
+) : ResourcePackConfigSubscription {
+    private val activeListener = AtomicReference<(ResourcePackSettings) -> Unit>(listener)
+    private val delivery = Any()
+    private val latestDelivery = AtomicLong()
+
+    override fun deliverCurrent() {
+        if (activeListener.get() == null) return
+        val deliveryId = latestDelivery.incrementAndGet()
+        val current = backend.current()
+        synchronized(delivery) {
+            if (deliveryId == latestDelivery.get()) activeListener.get()?.invoke(current)
         }
-        return AutoCloseable { synchronized(delivery) { activeListener.set(null) } }
+    }
+
+    override fun close() {
+        synchronized(delivery) { activeListener.set(null) }
     }
 }
 

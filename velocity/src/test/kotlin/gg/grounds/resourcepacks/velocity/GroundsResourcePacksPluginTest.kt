@@ -16,6 +16,10 @@ import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -209,6 +213,78 @@ class GroundsResourcePacksPluginTest {
         assertEquals(listOf(latestSource.toClientSource()), client.reconfigurations)
     }
 
+    // Break caught: initial current delivery can apply A after a callback for current B when it
+    // does not share the callback delivery monitor.
+    @Test
+    fun `callback overtakes a paused initial read without allowing stale rollback`() {
+        val initial = settings(packSet = "initial")
+        val latest = settings(packSet = "latest")
+        val backend = FakeResourcePackConfigBackend(initial)
+        backend.pauseNextCurrentRead()
+        val clients = FakeClientFactory()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+                VelocityResourcePackConfigGateway(backend),
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                FakeResourcePackLog(),
+            )
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val initialize = executor.submit { plugin.onInitialize(ProxyInitializeEvent()) }
+            assertTrue(backend.currentReadEntered.await(1, TimeUnit.SECONDS))
+            val callbackStarted = CountDownLatch(1)
+            val callback =
+                executor.submit {
+                    callbackStarted.countDown()
+                    backend.publishChange(latest)
+                }
+            assertTrue(callbackStarted.await(1, TimeUnit.SECONDS))
+            callback.get(1, TimeUnit.SECONDS)
+            assertEquals(latest.toClientSource(), clients.created.single().state().source)
+
+            backend.releaseCurrentRead.countDown()
+            initialize.get(1, TimeUnit.SECONDS)
+        } finally {
+            backend.releaseCurrentRead.countDown()
+            executor.shutdownNow()
+        }
+
+        assertEquals(emptyList(), clients.created.single().reconfigurations)
+    }
+
+    // Break caught: when a callback applies B during subscription, a later independent initial
+    // read can still create or reconfigure the client with stale A.
+    @Test
+    fun `callback delivery before initial delivery keeps the callback value current`() {
+        val initial = settings(packSet = "initial")
+        val latest = settings(packSet = "latest")
+        val backend = FakeResourcePackConfigBackend(initial)
+        backend.publishDuringSubscription(latest)
+        val clients = FakeClientFactory()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+                VelocityResourcePackConfigGateway(backend),
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                FakeResourcePackLog(),
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        val client = clients.created.single()
+        assertEquals(latest.toClientSource(), client.state().source)
+        assertEquals(emptyList(), client.reconfigurations)
+    }
+
     // Break caught: shutdown can leak config/client/status listeners or accept late callbacks.
     @Test
     fun `shutdown closes client and listeners and ignores later config changes`() {
@@ -327,6 +403,48 @@ class GroundsResourcePacksPluginTest {
         assertFalse(log.messages.last().contains("targetId=v1.0.2"))
     }
 
+    // Break caught: when two overlapping requests reuse a pack UUID, a late event for A can be
+    // falsely attributed to B even though Velocity exposes no request identity.
+    @Test
+    fun `same pack uuid across targets makes late status attribution unknown`() {
+        val initial = settings(packSet = "old")
+        val changed = settings(packSet = "new")
+        val samePack = resolvedPack(uuid = UUID.fromString("11111111-1111-1111-1111-111111111111"))
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val log = FakeResourcePackLog()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                online = listOf(online),
+                sender = PackSender { _, _ -> },
+                events = events,
+                log = log,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(samePack))))
+        gateway.emit(changed)
+        client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(samePack))))
+        val listener = events.registered.single().second as ResourcePackStatusListener
+
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                samePack.uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
+
+        assertTrue(log.messages.last().contains("targetId=unknown"))
+        assertFalse(log.messages.last().contains("targetId=v1.0.1"))
+        assertFalse(log.messages.last().contains("targetId=v1.0.2"))
+    }
+
     // Break caught: ignoring STARTING hides the subsequent READY transition after reconfigure.
     @Test
     fun `every ready transition is logged after an intermediate starting state`() {
@@ -381,8 +499,12 @@ class GroundsResourcePacksPluginTest {
 
 internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
     ResourcePackConfigBackend {
-    private var current = initial
+    @Volatile private var current = initial
     private var listener: (() -> Unit)? = null
+    private val pauseCurrentRead = AtomicBoolean(false)
+    private var duringSubscription: ResourcePackSettings? = null
+    val currentReadEntered = CountDownLatch(1)
+    val releaseCurrentRead = CountDownLatch(1)
 
     override fun register(
         app: String,
@@ -390,10 +512,29 @@ internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult = ConfigRegistrationResult.ready()
 
-    override fun current(): ResourcePackSettings = current
+    override fun current(): ResourcePackSettings {
+        val captured = current
+        if (pauseCurrentRead.compareAndSet(true, false)) {
+            currentReadEntered.countDown()
+            releaseCurrentRead.await(1, TimeUnit.SECONDS)
+        }
+        return captured
+    }
 
     override fun onChange(listener: () -> Unit) {
         this.listener = listener
+        duringSubscription?.let {
+            current = it
+            listener()
+        }
+    }
+
+    fun pauseNextCurrentRead() {
+        pauseCurrentRead.set(true)
+    }
+
+    fun publishDuringSubscription(settings: ResourcePackSettings) {
+        duringSubscription = settings
     }
 
     fun captureChange(settings: ResourcePackSettings): () -> Unit {
@@ -432,17 +573,25 @@ internal class FakeConfigGateway(
         return result
     }
 
-    override fun current(): ResourcePackSettings {
+    private fun current(): ResourcePackSettings {
         currentReads += 1
         return checkNotNull(current)
     }
 
-    override fun onChange(listener: (ResourcePackSettings) -> Unit): AutoCloseable {
+    override fun onChange(
+        listener: (ResourcePackSettings) -> Unit
+    ): ResourcePackConfigSubscription {
         subscribed = true
         this.listener = listener
-        return AutoCloseable {
-            listenerClosed = true
-            this.listener = null
+        return object : ResourcePackConfigSubscription {
+            override fun deliverCurrent() {
+                listener(current())
+            }
+
+            override fun close() {
+                listenerClosed = true
+                this@FakeConfigGateway.listener = null
+            }
         }
     }
 

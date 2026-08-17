@@ -22,7 +22,7 @@ class ResourcePackCoordinator(
 ) {
     private val delivery = Any()
     private val sent = ConcurrentHashMap<UUID, String>()
-    private val targetAttributions = LinkedHashMap<PlayerPack, String>(16, 0.75f, true)
+    private val targetAttributions = LinkedHashMap<PlayerPack, TargetAttribution>(16, 0.75f, true)
     private var currentSettings: ResourcePackSettings? = null
     private var closed = false
 
@@ -74,7 +74,12 @@ class ResourcePackCoordinator(
     }
 
     internal fun targetId(playerId: UUID, packId: UUID?): String? =
-        synchronized(delivery) { packId?.let { targetAttributions[PlayerPack(playerId, it)] } }
+        synchronized(delivery) {
+            packId
+                ?.let { targetAttributions[PlayerPack(playerId, it)] }
+                ?.let { it as? TargetAttribution.Exact }
+                ?.targetId
+        }
 
     internal fun clear() =
         synchronized(delivery) {
@@ -103,7 +108,15 @@ class ResourcePackCoordinator(
                     throw failure
                 }
                 prepared.packIds.forEach { packId ->
-                    targetAttributions[PlayerPack(player.uniqueId, packId)] = prepared.targetId
+                    val key = PlayerPack(player.uniqueId, packId)
+                    targetAttributions[key] =
+                        when (val previous = targetAttributions[key]) {
+                            null -> TargetAttribution.Exact(prepared.targetId)
+                            is TargetAttribution.Exact ->
+                                if (previous.targetId == prepared.targetId) previous
+                                else TargetAttribution.Ambiguous
+                            TargetAttribution.Ambiguous -> TargetAttribution.Ambiguous
+                        }
                 }
                 while (targetAttributions.size > MAX_STATUS_ATTRIBUTIONS) {
                     targetAttributions.entries.iterator().run {
@@ -117,6 +130,12 @@ class ResourcePackCoordinator(
     }
 
     private data class PlayerPack(val playerId: UUID, val packId: UUID)
+
+    private sealed interface TargetAttribution {
+        data class Exact(val targetId: String) : TargetAttribution
+
+        data object Ambiguous : TargetAttribution
+    }
 
     private companion object {
         const val MAX_STATUS_ATTRIBUTIONS = 4_096

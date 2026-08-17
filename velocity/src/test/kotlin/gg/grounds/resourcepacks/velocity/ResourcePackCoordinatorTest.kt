@@ -204,6 +204,33 @@ class ResourcePackCoordinatorTest {
         assertNull(coordinator.targetId(player.uniqueId, packId))
     }
 
+    // Break caught: an ambiguous same-UUID association can survive session cleanup and prevent a
+    // later unambiguous session from reporting its exact target.
+    @Test
+    fun `disconnect clears same uuid ambiguity for the next session`() {
+        val settings = settings()
+        var state = readyState(settings, snapshot(settings, sequence = 1))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { listOf(player) },
+                PackSender { _, _ -> },
+                VelocityPackRequestFactory(),
+            )
+        coordinator.onLogin(player)
+        state = readyState(settings, snapshot(settings, sequence = 2))
+        coordinator.onSnapshot(state)
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+
+        coordinator.forget(player.uniqueId)
+        coordinator.onLogin(player)
+
+        assertEquals("v1.0.2", coordinator.targetId(player.uniqueId, packId))
+    }
+
     // Break caught: successful-send attribution can outlive disabled delivery or plugin shutdown.
     @Test
     fun `target attribution clears when delivery disables and when coordinator closes`() {

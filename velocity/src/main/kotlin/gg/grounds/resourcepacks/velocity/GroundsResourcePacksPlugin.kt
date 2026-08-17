@@ -91,9 +91,10 @@ internal constructor(
                 environment = deploymentEnvironment,
                 mode = ConfigStartupMode.DEGRADED,
             )
-        configListener = configGateway.onChange(::applySettings)
+        val subscription = configGateway.onChange(::applySettings)
+        configListener = subscription
         if (result.isUsable()) {
-            applySettings(configGateway.current())
+            subscription.deliverCurrent()
         } else {
             log.warn(
                 "Resource-pack configuration not ready (status=${result.status}, " +
