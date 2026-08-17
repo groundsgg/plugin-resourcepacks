@@ -79,7 +79,7 @@ internal constructor(
     @Subscribe
     fun onInitialize(@Suppress("UNUSED_PARAMETER") event: ProxyInitializeEvent) {
         if (!initialized.compareAndSet(false, true)) return
-        val listener = ResourcePackStatusListener(metrics, ::currentTargetId, log)
+        val listener = ResourcePackStatusListener(metrics, coordinator::targetId, log)
         statusListener = listener
         eventRegistry.register(this, listener)
 
@@ -97,7 +97,7 @@ internal constructor(
         } else {
             log.warn(
                 "Resource-pack configuration not ready (status=${result.status}, " +
-                    "reason=${sanitizeNullableLogText(result.reason)})"
+                    "reason=${normalizeDiagnosticReason(result.reason)})"
             )
         }
     }
@@ -115,20 +115,26 @@ internal constructor(
     @Subscribe
     fun onShutdown(@Suppress("UNUSED_PARAMETER") event: ProxyShutdownEvent) {
         if (!stopped.compareAndSet(false, true)) return
-        val toClose: ResourcePackClient?
+        var configToClose: AutoCloseable? = null
+        var clientListenerToClose: AutoCloseable? = null
+        var statusToUnregister: ResourcePackStatusListener? = null
+        var clientToClose: ResourcePackClient? = null
         coordinator.clear()
         synchronized(lifecycle) {
-            configListener?.close()
+            configToClose = configListener
             configListener = null
-            clientListener?.close()
+            clientListenerToClose = clientListener
             clientListener = null
-            statusListener?.let { eventRegistry.unregister(this, it) }
+            statusToUnregister = statusListener
             statusListener = null
-            toClose = client
+            clientToClose = client
             client = null
             configured.set(null)
         }
-        toClose?.close()
+        configToClose?.close()
+        clientListenerToClose?.close()
+        statusToUnregister?.let { eventRegistry.unregister(this, it) }
+        clientToClose?.close()
         state.set(closedState())
     }
 
@@ -139,7 +145,7 @@ internal constructor(
             value.status,
             value.current?.fingerprint,
             value.degradedFallback?.fingerprint,
-            sanitizeNullableLogText(value.lastError),
+            normalizeDiagnosticReason(value.lastError),
             counts.requested,
             counts.accepted,
             counts.downloaded,
@@ -153,10 +159,8 @@ internal constructor(
         val nextSource =
             try {
                 next.toClientSource()
-            } catch (failure: IllegalArgumentException) {
-                log.warn(
-                    "Resource-pack settings rejected (reason=invalid_settings, detail=${sanitizeLogText(failure.message ?: "invalid")})"
-                )
+            } catch (_: IllegalArgumentException) {
+                log.warn("Resource-pack settings rejected (reason=invalid_settings)")
                 return
             }
 
@@ -197,23 +201,10 @@ internal constructor(
                 "Resource-pack client transition (status=${next.status}, " +
                     "currentFingerprint=${next.current?.fingerprint}, " +
                     "fallbackFingerprint=${next.degradedFallback?.fingerprint}, " +
-                    "reason=${sanitizeNullableLogText(next.lastError)})"
+                    "reason=${normalizeDiagnosticReason(next.lastError)})"
             )
         }
         if (!stopped.get()) coordinator.onSnapshot(next)
-    }
-
-    private fun currentTargetId(): String? {
-        val settings = configured.get() ?: return null
-        val clientState = state.get()
-        val source = settings.toClientSource()
-        return when (clientState.status) {
-            PackSetClientStatus.READY ->
-                clientState.current?.takeIf { it.source == source }?.channel?.target?.id
-            PackSetClientStatus.DEGRADED ->
-                clientState.degradedFallback?.takeIf { it.source == source }?.channel?.target?.id
-            else -> null
-        }
     }
 
     private companion object {

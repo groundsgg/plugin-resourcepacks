@@ -4,7 +4,7 @@ import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNull
 
 class ResourcePackStatusListenerTest {
     // Break caught: terminal failures and invalid URLs can disappear from runtime diagnostics.
@@ -12,7 +12,7 @@ class ResourcePackStatusListenerTest {
     fun `status listener counts all diagnostic categories and logs safe identifiers`() {
         val metrics = ResourcePackMetrics()
         val log = FakeResourcePackLog()
-        val listener = ResourcePackStatusListener(metrics, { "v1.2.3" }, log)
+        val listener = ResourcePackStatusListener(metrics, { _, _ -> "v1.2.3" }, log)
         val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
         metrics.requested()
@@ -41,17 +41,35 @@ class ResourcePackStatusListenerTest {
         assertEquals(true, log.messages.all { it.contains("v1.2.3") })
     }
 
-    // Break caught: config-service tokens can leak through state reasons and local diagnostics.
+    // Break caught: regex redaction can miss credentials and arbitrary upstream response bodies in
+    // formats the plugin did not anticipate.
     @Test
-    fun `sanitizer redacts credential values from status text`() {
-        val sanitized =
-            sanitizeLogText(
-                "token=abc password: hunter2 authorization: Bearer xyz secret_key=qwerty"
+    fun `diagnostic reasons fail closed for every untrusted format`() {
+        val hostile =
+            listOf(
+                "R2_SECRET_ACCESS_KEY=r2-secret",
+                "{\"R2_SECRET_ACCESS_KEY\":\"json-secret\",\"body\":\"private\"}",
+                "Authorization: Bearer bearer-secret",
+                "Authorization: Basic dXNlcjpwYXNz",
+                "?token=query-secret&access_key_id=query-key",
+                "X-Upstream-Body: database dump and customer text",
+                "request failed\n\n<html>private response body</html>",
             )
 
-        assertFalse(sanitized.contains("abc"))
-        assertFalse(sanitized.contains("hunter2"))
-        assertFalse(sanitized.contains("xyz"))
-        assertFalse(sanitized.contains("qwerty"))
+        assertEquals(
+            List(hostile.size) { "unknown_failure" },
+            hostile.map(::normalizeDiagnosticReason),
+        )
+    }
+
+    // Break caught: fail-closed normalization can erase useful client/config failure categories.
+    @Test
+    fun `diagnostic reasons retain only explicitly controlled categories`() {
+        assertEquals("channel_request_failed", normalizeDiagnosticReason("Channel request failed."))
+        assertEquals(
+            "bootstrap_failed_no_cached_snapshot",
+            normalizeDiagnosticReason("bootstrap_failed_no_cached_snapshot"),
+        )
+        assertNull(normalizeDiagnosticReason(null))
     }
 }

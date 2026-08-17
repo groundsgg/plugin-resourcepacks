@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ResourcePackCoordinatorTest {
@@ -173,6 +174,90 @@ class ResourcePackCoordinatorTest {
         coordinator.onLogin(player)
 
         assertEquals(2, attempts)
+    }
+
+    // Break caught: target attribution can be recorded before a failed send or survive the
+    // player's disconnect indefinitely.
+    @Test
+    fun `target attribution starts after successful send and clears on disconnect`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        var fail = true
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> if (fail) error("send failed") },
+                VelocityPackRequestFactory(),
+            )
+
+        assertFailsWith<IllegalStateException> { coordinator.onLogin(player) }
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+        fail = false
+        coordinator.onLogin(player)
+        assertEquals("v1.0.1", coordinator.targetId(player.uniqueId, packId))
+        coordinator.forget(player.uniqueId)
+
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+    }
+
+    // Break caught: successful-send attribution can outlive disabled delivery or plugin shutdown.
+    @Test
+    fun `target attribution clears when delivery disables and when coordinator closes`() {
+        var settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { listOf(player) },
+                PackSender { _, _ -> },
+                VelocityPackRequestFactory(),
+            )
+        coordinator.onLogin(player)
+
+        settings = settings.copy(enabled = false)
+        coordinator.onSettingsChanged(settings)
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+
+        settings = settings.copy(enabled = true)
+        coordinator.onSettingsChanged(settings)
+        assertEquals("v1.0.1", coordinator.targetId(player.uniqueId, packId))
+        coordinator.clear()
+
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+    }
+
+    // Break caught: one stale player throwing during snapshot fanout can starve every later online
+    // player and can be incorrectly marked as delivered.
+    @Test
+    fun `snapshot fanout isolates a failed player and retries only that player`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val failed = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val healthy = player("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        val attempts = mutableListOf<UUID>()
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { listOf(failed, healthy) },
+                PackSender { player, _ ->
+                    attempts += player.uniqueId
+                    if (player.uniqueId == failed.uniqueId) error("stale player")
+                },
+                VelocityPackRequestFactory(),
+            )
+
+        coordinator.onSnapshot(state)
+        coordinator.onSnapshot(state)
+
+        assertEquals(listOf(failed.uniqueId, healthy.uniqueId, failed.uniqueId), attempts)
     }
 
     // Break caught: concurrent login/snapshot paths can race and send the same offer twice.

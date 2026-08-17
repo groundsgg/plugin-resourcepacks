@@ -15,10 +15,7 @@ import gg.grounds.resourcepacks.client.PackSetSource
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -93,6 +90,7 @@ class GroundsResourcePacksPluginTest {
         assertTrue(gateway.subscribed)
         assertEquals(1, events.registered.size)
         assertFalse(log.messages.joinToString().contains("top-secret"))
+        assertTrue(log.messages.single().contains("reason=unknown_failure"))
         assertNull(plugin.runtimeStatus().currentFingerprint)
     }
 
@@ -163,69 +161,52 @@ class GroundsResourcePacksPluginTest {
         val client = clients.created.single()
 
         gateway.emit(
-            initial.copy(source = initial.source.copy(baseUrl = "http://credentials.example.test"))
+            initial.copy(
+                source =
+                    initial.source.copy(
+                        channel =
+                            "edge\nAuthorization: Basic dXNlcjpwYXNz\n<body>private response</body>"
+                    )
+            )
         )
 
         assertEquals(0, client.reconfigurations.size)
         assertEquals(initial.toClientSource(), client.state().source)
-        assertTrue(log.messages.any { it.contains("invalid_settings") })
+        assertEquals(
+            "Resource-pack settings rejected (reason=invalid_settings)",
+            log.messages.single(),
+        )
     }
 
-    // Break caught: concurrent config callbacks can reconfigure the client back to an older source.
+    // Break caught: a delayed callback carrying an old payload can reconfigure the client back to
+    // an obsolete source after a newer manager value is already current.
     @Test
-    fun `concurrent source changes preserve config callback order`() {
+    fun `delayed config callback resolves the latest manager value instead of its old payload`() {
         val initial = settings()
-        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val backend = FakeResourcePackConfigBackend(initial)
+        val gateway = VelocityResourcePackConfigGateway(backend)
         val clients = FakeClientFactory()
-        val secondReconciliationEntered = CountDownLatch(1)
-        val releaseSecondReconciliation = CountDownLatch(1)
-        val playerReads = AtomicInteger()
-        val players = OnlinePlayerView {
-            if (playerReads.incrementAndGet() == 2) {
-                secondReconciliationEntered.countDown()
-                releaseSecondReconciliation.await(1, TimeUnit.SECONDS)
-            }
-            emptyList()
-        }
         val plugin =
             GroundsResourcePacksPlugin(
                 Files.createTempDirectory("resourcepacks-plugin-test"),
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 gateway,
                 clients,
-                players,
+                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
             )
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
-        val firstSource = settings(packSet = "first")
-        val secondSource = settings(packSet = "second")
-        val executor = Executors.newFixedThreadPool(2)
-        try {
-            val first = executor.submit { gateway.emit(firstSource) }
-            assertTrue(secondReconciliationEntered.await(1, TimeUnit.SECONDS))
-            val secondStarted = CountDownLatch(1)
-            val second =
-                executor.submit {
-                    secondStarted.countDown()
-                    gateway.emit(secondSource)
-                }
-            assertTrue(secondStarted.await(1, TimeUnit.SECONDS))
-            assertFalse(second.isDone)
-            releaseSecondReconciliation.countDown()
-            first.get(1, TimeUnit.SECONDS)
-            second.get(1, TimeUnit.SECONDS)
-        } finally {
-            releaseSecondReconciliation.countDown()
-            executor.shutdownNow()
-        }
+        val delayedOldSource = settings(packSet = "old-delayed")
+        val latestSource = settings(packSet = "latest")
 
-        assertEquals(
-            listOf(firstSource.toClientSource(), secondSource.toClientSource()),
-            client.reconfigurations,
-        )
+        val delayedCallback = backend.captureChange(delayedOldSource)
+        backend.publishChange(latestSource)
+        delayedCallback()
+
+        assertEquals(listOf(latestSource.toClientSource()), client.reconfigurations)
     }
 
     // Break caught: shutdown can leak config/client/status listeners or accept late callbacks.
@@ -296,11 +277,54 @@ class GroundsResourcePacksPluginTest {
         assertEquals(PackSetClientStatus.DEGRADED, status.clientStatus)
         assertNull(status.currentFingerprint)
         assertEquals(fallback.fingerprint, status.fallbackFingerprint)
-        assertFalse(status.lastError!!.contains("do-not-log"))
+        assertEquals("unknown_failure", status.lastError)
         assertEquals(1, status.requested)
         assertEquals(1, status.accepted)
         assertEquals(1, status.failed)
         assertFalse(log.messages.joinToString().contains("do-not-log"))
+        assertTrue(log.messages.any { it.contains("reason=unknown_failure") })
+    }
+
+    // Break caught: a late status for an already-sent pack can be attributed to the newly current
+    // target after a source reconfiguration.
+    @Test
+    fun `late pack status retains the target active when that pack was sent`() {
+        val initial = settings(packSet = "old")
+        val changed = settings(packSet = "new")
+        val oldPack = resolvedPack(uuid = UUID.fromString("11111111-1111-1111-1111-111111111111"))
+        val newPack = resolvedPack(uuid = UUID.fromString("22222222-2222-2222-2222-222222222222"))
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val log = FakeResourcePackLog()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                online = listOf(online),
+                sender = PackSender { _, _ -> },
+                events = events,
+                log = log,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(oldPack))))
+        gateway.emit(changed)
+        client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(newPack))))
+        val listener = events.registered.single().second as ResourcePackStatusListener
+
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                oldPack.uuid,
+                PlayerResourcePackStatusEvent.Status.DOWNLOADED,
+                null,
+            )
+        )
+
+        assertTrue(log.messages.last().contains("targetId=v1.0.1"))
+        assertFalse(log.messages.last().contains("targetId=v1.0.2"))
     }
 
     // Break caught: ignoring STARTING hides the subsequent READY transition after reconfigure.
@@ -335,7 +359,7 @@ class GroundsResourcePacksPluginTest {
     }
 
     private fun plugin(
-        gateway: FakeConfigGateway,
+        gateway: ResourcePackConfigGateway,
         clients: FakeClientFactory,
         directory: Path = Files.createTempDirectory("resourcepacks-plugin-test"),
         online: Collection<com.velocitypowered.api.proxy.Player> = emptyList(),
@@ -353,6 +377,34 @@ class GroundsResourcePacksPluginTest {
             eventRegistry = events,
             log = log,
         )
+}
+
+internal class FakeResourcePackConfigBackend(initial: ResourcePackSettings) :
+    ResourcePackConfigBackend {
+    private var current = initial
+    private var listener: (() -> Unit)? = null
+
+    override fun register(
+        app: String,
+        environment: String,
+        mode: ConfigStartupMode,
+    ): ConfigRegistrationResult = ConfigRegistrationResult.ready()
+
+    override fun current(): ResourcePackSettings = current
+
+    override fun onChange(listener: () -> Unit) {
+        this.listener = listener
+    }
+
+    fun captureChange(settings: ResourcePackSettings): () -> Unit {
+        current = settings
+        return checkNotNull(listener)
+    }
+
+    fun publishChange(settings: ResourcePackSettings) {
+        current = settings
+        checkNotNull(listener).invoke()
+    }
 }
 
 internal data class Registration(

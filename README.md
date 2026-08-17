@@ -60,8 +60,8 @@ from the old source.
 `NOT_READY` configuration does not apply defaults, create a CDN client, or send packs. The first
 valid configuration change starts exactly one client. Shutdown detaches plugin-owned listeners and
 closes that client. Local runtime diagnostics expose client status, current and fallback
-fingerprints, and requested/accepted/downloaded/failed/declined counters with credential values
-redacted from logged reasons.
+fingerprints, and requested/accepted/downloaded/failed/declined counters. Untrusted diagnostic text
+is replaced by bounded, allowlisted reason codes.
 
 ## Current scope
 

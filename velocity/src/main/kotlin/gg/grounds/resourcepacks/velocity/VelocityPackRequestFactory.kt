@@ -32,6 +32,8 @@ class VelocityPackRequestFactory {
                 .prompt(Component.text(settings.prompt))
                 .build(),
             "${snapshot.source.cacheKey}:${snapshot.fingerprint}:${settings.required}:${settings.prompt}",
+            snapshot.channel.target.id,
+            snapshot.packs.mapTo(linkedSetOf(), ResolvedPack::uuid),
         )
     }
 
@@ -50,4 +52,9 @@ class VelocityPackRequestFactory {
     }
 }
 
-internal data class PreparedPackRequest(val request: ResourcePackRequest, val fingerprint: String)
+internal data class PreparedPackRequest(
+    val request: ResourcePackRequest,
+    val fingerprint: String,
+    val targetId: String,
+    val packIds: Set<java.util.UUID>,
+)
