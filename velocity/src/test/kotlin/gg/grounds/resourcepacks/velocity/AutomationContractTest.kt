@@ -1,16 +1,27 @@
 package gg.grounds.resourcepacks.velocity
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.io.TempDir
 import org.yaml.snakeyaml.Yaml
 
 class AutomationContractTest {
+    @TempDir lateinit var tempDir: Path
+
     private val root =
         generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }
             .first { it.resolve("settings.gradle.kts").exists() }
@@ -412,26 +423,83 @@ class AutomationContractTest {
     }
 
     @Test
-    fun `plugin metadata verifier rejects a mutated release version`() {
-        val descriptor =
-            "{\"id\":\"plugin-resourcepacks\",\"version\":\"0.0.0\",\"dependencies\":[{\"id\":\"plugin-config\",\"optional\":false}]}"
-        assertPluginMetadata(descriptor, "0.0.0")
-        assertFails { assertPluginMetadata(descriptor.replace("\"0.0.0\"", "\"0.0.1\""), "0.0.0") }
+    fun `production metadata verifier rejects a mutated shaded archive`() {
+        val shadowBuild = runGradle(":velocity:shadowJar")
+        assertEquals(0, shadowBuild.exitCode, shadowBuild.output)
+
+        val archive = root.resolve("velocity/build/libs/plugin-resourcepacks-velocity.jar")
+        assertTrue(archive.exists(), "shadowJar did not produce $archive")
+        val original = tempDir.resolve("plugin-original.jar")
+        val mutated = tempDir.resolve("plugin-mutated.jar")
+        Files.copy(archive, original)
+        mutatePluginVersion(archive, mutated, strictVersion(root.resolve("version.txt").readText()))
+        Files.move(mutated, archive, StandardCopyOption.REPLACE_EXISTING)
+
+        try {
+            val verification =
+                runGradle(":velocity:verifyNoOverridePluginMetadata", "-x", ":velocity:shadowJar")
+            assertTrue(
+                verification.exitCode != 0,
+                "the production verifier accepted mutated plugin metadata:\n${verification.output}",
+            )
+            assertContains(
+                verification.output,
+                "plugin metadata version must match version.txt",
+                message = "the production verifier must reject the intended mutation",
+            )
+        } finally {
+            Files.copy(original, archive, StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun assertPluginMetadata(descriptor: String, expectedVersion: String) {
-        val metadata = parseDocument(descriptor) as Map<String, Any?>
-        assertEquals(expectedVersion, scalar(metadata, "version"))
-        val dependencies =
-            metadata["dependencies"] as? List<*> ?: error("plugin metadata must list dependencies")
-        assertTrue(
-            dependencies.any { dependency ->
-                val entry = dependency as? Map<*, *> ?: return@any false
-                entry["id"] == "plugin-config" && entry["optional"] == false
-            },
-            "plugin metadata must require plugin-config",
-        )
+    private fun mutatePluginVersion(source: Path, target: Path, expectedVersion: String) {
+        var descriptorMutated = false
+        ZipInputStream(Files.newInputStream(source)).use { input ->
+            ZipOutputStream(Files.newOutputStream(target)).use { output ->
+                while (true) {
+                    val entry = input.nextEntry ?: break
+                    output.putNextEntry(ZipEntry(entry.name))
+                    if (entry.name == "velocity-plugin.json") {
+                        val descriptor = String(input.readBytes(), StandardCharsets.UTF_8)
+                        val anchor = "\"version\":\"$expectedVersion\""
+                        assertContains(
+                            descriptor,
+                            anchor,
+                            message = "mutation anchor missing from plugin metadata",
+                        )
+                        output.write(
+                            descriptor
+                                .replaceFirst(anchor, "\"version\":\"999.0.0\"")
+                                .toByteArray(StandardCharsets.UTF_8)
+                        )
+                        descriptorMutated = true
+                    } else {
+                        input.copyTo(output)
+                    }
+                    output.closeEntry()
+                    input.closeEntry()
+                }
+            }
+        }
+        assertTrue(descriptorMutated, "shaded archive must contain velocity-plugin.json")
+    }
+
+    private fun runGradle(vararg arguments: String): GradleRun {
+        val outputFile = Files.createTempFile(tempDir, "gradle-", ".log")
+        val process =
+            ProcessBuilder(
+                    listOf(root.resolve("gradlew").toString(), "--no-daemon", "--offline") +
+                        arguments
+                )
+                .directory(root.toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(outputFile.toFile())
+                .start()
+        if (!process.waitFor(120, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            error("nested Gradle invocation timed out:\n${outputFile.readText()}")
+        }
+        return GradleRun(process.exitValue(), outputFile.readText())
     }
 
     private fun atLeastInitialRelease(version: String): Boolean {
@@ -477,4 +545,6 @@ class AutomationContractTest {
     }
 
     private data class DockerInstruction(val keyword: String, val argument: String)
+
+    private data class GradleRun(val exitCode: Int, val output: String)
 }
