@@ -224,28 +224,18 @@ class AutomationContractTest {
             ),
             parseDocument(root.resolve("release-please-config.json").readText()),
         )
-        assertEquals(
-            mapOf("." to "0.0.0"),
-            parseDocument(root.resolve(".release-please-manifest.json").readText()),
+        assertVersionLifecycle(
+            root.resolve("version.txt").readText(),
+            root.resolve(".release-please-manifest.json").readText(),
         )
+        assertVersionLifecycle("0.1.0\n", "{\".\": \"0.1.0\"}")
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun assertVersionFile() {
-        val version = strictVersion(root.resolve("version.txt").readText())
-        val manifest =
-            scalar(
-                parseDocument(root.resolve(".release-please-manifest.json").readText())
-                    as Map<String, Any?>,
-                ".",
-            )
-                as String
-
-        val bootstrap = manifest == "0.0.0" && version == "0.0.0"
-        val released = manifest == version && atLeastInitialRelease(version)
-        assertTrue(
-            bootstrap || released,
-            "version.txt and Release Please manifest must represent bootstrap or one released version",
+        assertVersionLifecycle(
+            root.resolve("version.txt").readText(),
+            root.resolve(".release-please-manifest.json").readText(),
         )
     }
 
@@ -373,12 +363,75 @@ class AutomationContractTest {
         )
         assertTrue(
             Regex(
-                    "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
+                    "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
                 )
                 .matches(version),
             "version must be strict SemVer",
         )
         return version
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun assertVersionLifecycle(versionContents: String, manifestContents: String) {
+        val version = strictVersion(versionContents)
+        val manifest =
+            strictVersion(
+                scalar(parseDocument(manifestContents) as Map<String, Any?>, ".") as String
+            )
+        val bootstrap = manifest == "0.0.0" && version == "0.0.0"
+        val released = manifest == version && atLeastInitialRelease(version)
+        assertTrue(
+            bootstrap || released,
+            "version.txt and manifest must represent bootstrap or one released version",
+        )
+    }
+
+    @Test
+    fun `strict SemVer accepts and rejects release boundary values`() {
+        listOf(
+                "0.0.0",
+                "1.2.3-alpha",
+                "1.2.3-0",
+                "1.2.3-alpha.1",
+                "1.2.3-alpha.01x",
+                "1.2.3+build.7",
+            )
+            .forEach { assertEquals(it, strictVersion(it)) }
+        listOf(
+                "01.2.3",
+                "1.02.3",
+                "1.2.03",
+                "1.0.0-01",
+                "1.2.3-alpha.01",
+                "",
+                " ",
+                "\n",
+                "1.2.3\n\n",
+            )
+            .forEach { assertFails { strictVersion(it) } }
+    }
+
+    @Test
+    fun `plugin metadata verifier rejects a mutated release version`() {
+        val descriptor =
+            "{\"id\":\"plugin-resourcepacks\",\"version\":\"0.0.0\",\"dependencies\":[{\"id\":\"plugin-config\",\"optional\":false}]}"
+        assertPluginMetadata(descriptor, "0.0.0")
+        assertFails { assertPluginMetadata(descriptor.replace("\"0.0.0\"", "\"0.0.1\""), "0.0.0") }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun assertPluginMetadata(descriptor: String, expectedVersion: String) {
+        val metadata = parseDocument(descriptor) as Map<String, Any?>
+        assertEquals(expectedVersion, scalar(metadata, "version"))
+        val dependencies =
+            metadata["dependencies"] as? List<*> ?: error("plugin metadata must list dependencies")
+        assertTrue(
+            dependencies.any { dependency ->
+                val entry = dependency as? Map<*, *> ?: return@any false
+                entry["id"] == "plugin-config" && entry["optional"] == false
+            },
+            "plugin metadata must require plugin-config",
+        )
     }
 
     private fun atLeastInitialRelease(version: String): Boolean {

@@ -2,6 +2,7 @@ import org.gradle.api.JavaVersion
 import org.gradle.api.attributes.java.TargetJvmVersion
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.testing.Test
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
@@ -16,7 +17,7 @@ group = "gg.grounds"
 
 val semanticVersion =
     Regex(
-        "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
+        "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
     )
 val versionFileContents = file("version.txt").readText()
 val versionFromFile = versionFileContents.removeSuffix("\n")
@@ -59,32 +60,33 @@ subprojects {
         isReproducibleFileOrder = true
     }
     dependencyLocking { lockAllConfigurations() }
-}
 
-project(":velocity") {
-    val verifyNoOverridePluginMetadata =
-        tasks.register("verifyNoOverridePluginMetadata") {
-            dependsOn(tasks.named("shadowJar"))
-            doLast {
-                check(version.toString() == versionFromFile) {
-                    "verifyNoOverridePluginMetadata must run without -PversionOverride"
-                }
-                val shadedJars =
-                    layout.buildDirectory.dir("libs").get().asFile.listFiles()
-                        ?.filter { it.extension == "jar" }
-                        ?: emptyList()
-                check(shadedJars.size == 1) { "expected exactly one shaded Velocity JAR" }
-                ZipFile(shadedJars.single()).use { jar ->
-                    val descriptor = jar.getEntry("velocity-plugin.json") ?: error("missing plugin metadata")
-                    val metadata = jar.getInputStream(descriptor).bufferedReader().readText()
-                    check("\"version\":\"$versionFromFile\"" in metadata) {
-                        "plugin metadata version must match version.txt"
+    afterEvaluate {
+        if (name == "velocity") {
+            val shadowJar = tasks.named<ShadowJar>("shadowJar")
+            val verifyNoOverridePluginMetadata =
+                tasks.register("verifyNoOverridePluginMetadata") {
+                    dependsOn(shadowJar)
+                    inputs.file(shadowJar.flatMap { it.archiveFile })
+                    doLast {
+                        check(version.toString() == versionFromFile) {
+                            "verifyNoOverridePluginMetadata must run without -PversionOverride"
+                        }
+                        val shadedJar = shadowJar.get().archiveFile.get().asFile
+                        check(shadedJar.isFile) { "shadowJar did not produce ${shadedJar.absolutePath}" }
+                        ZipFile(shadedJar).use { jar ->
+                            val descriptor = jar.getEntry("velocity-plugin.json") ?: error("missing plugin metadata")
+                            val metadata = jar.getInputStream(descriptor).bufferedReader().readText()
+                            check("\"version\":\"$versionFromFile\"" in metadata) {
+                                "plugin metadata version must match version.txt"
+                            }
+                            check("\"id\":\"plugin-config\",\"optional\":false" in metadata) {
+                                "plugin metadata must require plugin-config"
+                            }
+                        }
                     }
-                    check("\"id\":\"plugin-config\",\"optional\":false" in metadata) {
-                        "plugin metadata must require plugin-config"
-                    }
                 }
-            }
+            tasks.named("check") { dependsOn(verifyNoOverridePluginMetadata) }
         }
-    tasks.named("check") { dependsOn(verifyNoOverridePluginMetadata) }
+    }
 }
