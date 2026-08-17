@@ -5,8 +5,14 @@ on:
     tags: [v*]
 
 jobs:
-  reusable:
+  maven:
     permissions:
-      contents: write
+      contents: read
       packages: write
     uses: groundsgg/.github/.github/workflows/gradle-publish.yml@main
+
+  docker:
+    permissions:
+      contents: read
+      packages: write
+    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main

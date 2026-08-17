@@ -12,9 +12,10 @@ plugins {
 }
 
 group = "gg.grounds"
-version = "0.1.0"
+version = file("version.txt").readText().trim()
 
 subprojects {
+    version = rootProject.version
     apply(plugin = "gg.grounds.base-conventions")
     apply(plugin = "org.jetbrains.kotlin.jvm")
 

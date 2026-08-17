@@ -22,14 +22,18 @@ class AutomationContractTest {
         assertReleasePlease(parseWorkflow("release-please.yml"))
         assertLabels(parseWorkflow("labels.yml"))
         assertReleasePleaseFiles()
+        assertDockerfile(parseDockerfile())
+        assertVersionFile()
         assertCanonicalPullRequestTemplate()
         assertNoResourcePackPublishingSecrets()
+        assertExactSecretBindings()
     }
 
     @Test
     fun `controlled mutations reject broad permissions missing clean check mutable checkout and missing tag trigger`() {
         val ci = workflowSource("ci.yml")
         val release = workflowSource("release.yml")
+        val dockerfile = dockerfileSource()
 
         assertFails { assertCi(parseText(replaceOnce(ci, "packages: read", "packages: write"))) }
         assertFails { assertCi(parseText(replaceOnce(ci, "clean check", "check"))) }
@@ -37,6 +41,35 @@ class AutomationContractTest {
         assertFails { assertCi(parseText(replaceOnce(ci, "contents: read", "contents: write"))) }
         assertFails {
             assertRelease(parseText(replaceOnce(release, "tags: [v*]", "branches: [main]")))
+        }
+        assertFails { assertRelease(parseText(replaceOnce(release, "docker:", "other:"))) }
+        assertFails {
+            assertRelease(parseText(replaceOnce(release, "contents: read", "contents: write")))
+        }
+        assertFails {
+            assertRelease(
+                parseText(
+                    replaceOnce(
+                        release,
+                        "    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main",
+                        "    secrets: inherit\n    uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main",
+                    )
+                )
+            )
+        }
+        assertFails {
+            assertDockerfile(
+                parseDockerfile(
+                    replaceOnce(
+                        dockerfile,
+                        "COPY --from=build /out/plugin.jar /jar/plugin.jar",
+                        "COPY --from=build /out/plugin.jar /jar/other.jar",
+                    )
+                )
+            )
+        }
+        assertFails {
+            assertDockerfile(parseDockerfile(replaceOnce(dockerfile, "type=secret", "type=bind")))
         }
     }
 
@@ -102,14 +135,29 @@ class AutomationContractTest {
         assertEquals("Release", scalar(workflow, "name"))
         assertEquals(setOf("push"), mapping(workflow, "on").keys)
         assertEquals(mapOf("tags" to listOf("v*")), mapping(mapping(workflow, "on"), "push"))
-        val reusable = mapping(mapping(workflow, "jobs"), "reusable")
+        val jobs = mapping(workflow, "jobs")
+        assertEquals(setOf("maven", "docker"), jobs.keys)
+        val reusable = mapping(jobs, "maven")
         assertEquals(
             "groundsgg/.github/.github/workflows/gradle-publish.yml@main",
             scalar(reusable, "uses"),
         )
         assertEquals(
-            mapOf("contents" to "write", "packages" to "write"),
+            mapOf("contents" to "read", "packages" to "write"),
             mapping(reusable, "permissions"),
+        )
+        val docker = mapping(jobs, "docker")
+        assertEquals(
+            "groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main",
+            scalar(docker, "uses"),
+        )
+        assertEquals(
+            mapOf("contents" to "read", "packages" to "write"),
+            mapping(docker, "permissions"),
+        )
+        assertFalse(
+            docker.containsKey("secrets"),
+            "Docker release must use only built-in GitHub credentials",
         )
     }
 
@@ -117,7 +165,9 @@ class AutomationContractTest {
         assertEquals("Release Please", scalar(workflow, "name"))
         assertEquals(setOf("push"), mapping(workflow, "on").keys)
         assertEquals(mapOf("branches" to listOf("main")), mapping(mapping(workflow, "on"), "push"))
-        val reusable = mapping(mapping(workflow, "jobs"), "reusable")
+        val jobs = mapping(workflow, "jobs")
+        assertEquals(setOf("reusable"), jobs.keys)
+        val reusable = mapping(jobs, "reusable")
         assertEquals(
             "groundsgg/.github/.github/workflows/release-please.yml@main",
             scalar(reusable, "uses"),
@@ -143,7 +193,9 @@ class AutomationContractTest {
             mapOf("paths" to listOf(".github/workflows/labels.yml")),
             mapping(mapping(workflow, "on"), "pull_request"),
         )
-        val reusable = mapping(mapping(workflow, "jobs"), "reusable")
+        val jobs = mapping(workflow, "jobs")
+        assertEquals(setOf("reusable"), jobs.keys)
+        val reusable = mapping(jobs, "reusable")
         assertEquals(
             "groundsgg/.github/.github/workflows/label-sync.yml@main",
             scalar(reusable, "uses"),
@@ -163,16 +215,53 @@ class AutomationContractTest {
                             mapOf(
                                 "release-type" to "simple",
                                 "package-name" to "plugin-resourcepacks",
+                                "initial-version" to "0.1.0",
                                 "include-v-in-tag" to true,
                                 "include-component-in-tag" to false,
+                                "extra-files" to listOf("version.txt"),
                             )
                     )
             ),
             parseDocument(root.resolve("release-please-config.json").readText()),
         )
         assertEquals(
-            mapOf("." to "0.1.0"),
+            mapOf("." to "0.0.0"),
             parseDocument(root.resolve(".release-please-manifest.json").readText()),
+        )
+    }
+
+    private fun assertVersionFile() {
+        val version = root.resolve("version.txt").readText().trim()
+        assertTrue(Regex("(?:0|[1-9]\\d*)\\.([0-9]+)\\.([0-9]+)").matches(version))
+        assertEquals("0.1.0", version)
+    }
+
+    private fun assertDockerfile(instructions: List<DockerInstruction>) {
+        assertEquals(
+            "eclipse-temurin:25-jdk",
+            instructions.first { it.keyword == "FROM" }.argument.substringBefore(" AS"),
+        )
+        assertTrue(
+            instructions.any {
+                it.keyword == "RUN" &&
+                    it.argument.contains("--mount=type=secret,id=github_token,required=true")
+            },
+            "Docker build must read package credentials from a required BuildKit secret",
+        )
+        assertTrue(
+            instructions.any { it.keyword == "RUN" && it.argument.contains(":velocity:shadowJar") },
+            "Docker build must produce the final shaded Velocity JAR",
+        )
+        assertTrue(
+            instructions.any {
+                it.keyword == "COPY" &&
+                    it.argument == "--from=build /out/plugin.jar /jar/plugin.jar"
+            },
+            "runtime image must carry exactly /jar/plugin.jar",
+        )
+        assertFalse(
+            instructions.any { it.keyword in setOf("ENTRYPOINT", "CMD") },
+            "plugin JAR image must not define a runtime command",
         )
     }
 
@@ -201,12 +290,48 @@ class AutomationContractTest {
         }
     }
 
+    private fun assertExactSecretBindings() {
+        val workflows =
+            root.resolve(".github/workflows").toFile().listFiles()!!.associate { workflow ->
+                workflow.name to parseText(workflow.readText())
+            }
+        assertEquals(emptySet(), secretReferences(workflows.getValue("ci.yml")))
+        assertEquals(emptySet(), secretReferences(workflows.getValue("release.yml")))
+        assertEquals(emptySet(), secretReferences(workflows.getValue("labels.yml")))
+        assertEquals(
+            setOf("RELEASE_PLEASE_TOKEN"),
+            secretReferences(workflows.getValue("release-please.yml")),
+        )
+        workflows.forEach { (name, workflow) ->
+            assertFalse(hasInheritedSecrets(workflow), "$name must not inherit repository secrets")
+        }
+    }
+
     private val githubSha = "${'$'}{{ github.sha }}"
 
     private fun parseWorkflow(name: String): Map<String, Any?> = parseText(workflowSource(name))
 
     private fun workflowSource(name: String): String =
         root.resolve(".github/workflows/$name").readText()
+
+    private fun dockerfileSource(): String = root.resolve("Dockerfile").readText()
+
+    private fun parseDockerfile(source: String = dockerfileSource()): List<DockerInstruction> =
+        source
+            .lineSequence()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .fold(mutableListOf<String>()) { lines, line ->
+                if (line.startsWith(" ") || line.startsWith("\\t")) {
+                    lines[lines.lastIndex] += "\n${line.trim()}"
+                } else {
+                    lines += line.trim()
+                }
+                lines
+            }
+            .map { line ->
+                DockerInstruction(line.substringBefore(' '), line.substringAfter(' ', ""))
+            }
+            .toList()
 
     @Suppress("UNCHECKED_CAST")
     private fun parseText(source: String): Map<String, Any?> =
@@ -236,6 +361,22 @@ class AutomationContractTest {
             else -> emptyList()
         }
 
+    private fun secretReferences(value: Any?): Set<String> =
+        Regex("secrets\\.([A-Za-z0-9_]+)")
+            .findAll(stringsDeep(value).joinToString("\n"))
+            .map { it.groupValues[1] }
+            .toSet()
+
+    private fun hasInheritedSecrets(value: Any?): Boolean =
+        when (value) {
+            is Map<*, *> ->
+                value.entries.any { (key, child) ->
+                    (key == "secrets" && child == "inherit") || hasInheritedSecrets(child)
+                }
+            is List<*> -> value.any(::hasInheritedSecrets)
+            else -> false
+        }
+
     @Suppress("UNCHECKED_CAST")
     private fun mapping(value: Map<String, Any?>, key: String): Map<String, Any?> =
         value[key] as? Map<String, Any?> ?: error("$key must be a mapping")
@@ -246,4 +387,6 @@ class AutomationContractTest {
         assertTrue(source.contains(old), "test mutation anchor missing: $old")
         return source.replaceFirst(old, new)
     }
+
+    private data class DockerInstruction(val keyword: String, val argument: String)
 }
