@@ -230,10 +230,23 @@ class AutomationContractTest {
         )
     }
 
+    @Suppress("UNCHECKED_CAST")
     private fun assertVersionFile() {
-        val version = root.resolve("version.txt").readText().trim()
-        assertTrue(Regex("(?:0|[1-9]\\d*)\\.([0-9]+)\\.([0-9]+)").matches(version))
-        assertEquals("0.1.0", version)
+        val version = strictVersion(root.resolve("version.txt").readText())
+        val manifest =
+            scalar(
+                parseDocument(root.resolve(".release-please-manifest.json").readText())
+                    as Map<String, Any?>,
+                ".",
+            )
+                as String
+
+        val bootstrap = manifest == "0.0.0" && version == "0.0.0"
+        val released = manifest == version && atLeastInitialRelease(version)
+        assertTrue(
+            bootstrap || released,
+            "version.txt and Release Please manifest must represent bootstrap or one released version",
+        )
     }
 
     private fun assertDockerfile(instructions: List<DockerInstruction>) {
@@ -351,6 +364,28 @@ class AutomationContractTest {
         }
 
     private fun parseDocument(source: String): Any? = normalize(Yaml().load<Any?>(source))
+
+    private fun strictVersion(contents: String): String {
+        val version = contents.removeSuffix("\n")
+        assertTrue(
+            contents == version || contents == "$version\n",
+            "version.txt may contain only one optional trailing newline",
+        )
+        assertTrue(
+            Regex(
+                    "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
+                )
+                .matches(version),
+            "version must be strict SemVer",
+        )
+        return version
+    }
+
+    private fun atLeastInitialRelease(version: String): Boolean {
+        val (major, minor, patch) =
+            version.substringBefore('-').substringBefore('+').split('.').map(String::toInt)
+        return major > 0 || minor > 1 || (minor == 1 && patch >= 0)
+    }
 
     private fun stringsDeep(value: Any?): List<String> =
         when (value) {

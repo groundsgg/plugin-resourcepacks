@@ -5,6 +5,7 @@ import org.gradle.api.tasks.testing.Test
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.util.zip.ZipFile
 
 plugins {
     id("gg.grounds.base-conventions") version "0.8.0" apply false
@@ -12,12 +13,25 @@ plugins {
 }
 
 group = "gg.grounds"
-version = file("version.txt").readText().trim()
+
+val semanticVersion =
+    Regex(
+        "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?"
+    )
+val versionFileContents = file("version.txt").readText()
+val versionFromFile = versionFileContents.removeSuffix("\n")
+check(versionFileContents == versionFromFile || versionFileContents == "$versionFromFile\n") {
+    "version.txt may contain only one optional trailing newline"
+}
+check(semanticVersion.matches(versionFromFile)) { "version.txt must contain a strict SemVer version" }
+val resolvedVersion = providers.gradleProperty("versionOverride").orNull ?: versionFromFile
+check(semanticVersion.matches(resolvedVersion)) { "versionOverride must contain a strict SemVer version" }
+version = resolvedVersion
 
 subprojects {
-    version = rootProject.version
     apply(plugin = "gg.grounds.base-conventions")
     apply(plugin = "org.jetbrains.kotlin.jvm")
+    version = rootProject.version
 
     repositories {
         mavenCentral()
@@ -45,4 +59,32 @@ subprojects {
         isReproducibleFileOrder = true
     }
     dependencyLocking { lockAllConfigurations() }
+}
+
+project(":velocity") {
+    val verifyNoOverridePluginMetadata =
+        tasks.register("verifyNoOverridePluginMetadata") {
+            dependsOn(tasks.named("shadowJar"))
+            doLast {
+                check(version.toString() == versionFromFile) {
+                    "verifyNoOverridePluginMetadata must run without -PversionOverride"
+                }
+                val shadedJars =
+                    layout.buildDirectory.dir("libs").get().asFile.listFiles()
+                        ?.filter { it.extension == "jar" }
+                        ?: emptyList()
+                check(shadedJars.size == 1) { "expected exactly one shaded Velocity JAR" }
+                ZipFile(shadedJars.single()).use { jar ->
+                    val descriptor = jar.getEntry("velocity-plugin.json") ?: error("missing plugin metadata")
+                    val metadata = jar.getInputStream(descriptor).bufferedReader().readText()
+                    check("\"version\":\"$versionFromFile\"" in metadata) {
+                        "plugin metadata version must match version.txt"
+                    }
+                    check("\"id\":\"plugin-config\",\"optional\":false" in metadata) {
+                        "plugin metadata must require plugin-config"
+                    }
+                }
+            }
+        }
+    tasks.named("check") { dependsOn(verifyNoOverridePluginMetadata) }
 }
