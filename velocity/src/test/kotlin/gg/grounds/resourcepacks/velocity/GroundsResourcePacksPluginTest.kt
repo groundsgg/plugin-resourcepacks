@@ -217,6 +217,27 @@ class GroundsResourcePacksPluginTest {
         assertEquals(0, clients.created.single().reconfigurations.size)
     }
 
+    // Break caught: URI(String) reports malformed escapes and whitespace with a checked
+    // URISyntaxException rather than IllegalArgumentException.
+    @Test
+    fun `malformed base URI is rejected without aborting config delivery`() {
+        val malformed =
+            settings()
+                .copy(source = settings().source.copy(baseUrl = "https://assets.example.test/%zz"))
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), malformed)
+        val clients = FakeClientFactory()
+        val log = FakeResourcePackLog()
+        val plugin = plugin(gateway, clients, log = log)
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        assertEquals(emptyList(), clients.created)
+        assertEquals(
+            listOf("Resource-pack settings rejected (reason=invalid_settings)"),
+            log.messages,
+        )
+    }
+
     // Break caught: ordinary settings changes must not reconstruct the HTTP client.
     @Test
     fun `usable registration reconciles flags and reconfigures the same client on source change`() {

@@ -81,6 +81,11 @@ class ResourcePackCoordinator(
                 ?.targetId
         }
 
+    internal fun ownsPack(playerId: UUID, packId: UUID?): Boolean =
+        synchronized(delivery) {
+            packId != null && targetAttributions.containsKey(PlayerPack(playerId, packId))
+        }
+
     internal fun clear() =
         synchronized(delivery) {
             closed = true

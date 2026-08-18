@@ -14,6 +14,7 @@ import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
+import java.net.URISyntaxException
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -79,7 +80,8 @@ internal constructor(
     @Subscribe
     fun onInitialize(@Suppress("UNUSED_PARAMETER") event: ProxyInitializeEvent) {
         if (!initialized.compareAndSet(false, true)) return
-        val listener = ResourcePackStatusListener(metrics, coordinator::targetId, log)
+        val listener =
+            ResourcePackStatusListener(metrics, coordinator::ownsPack, coordinator::targetId, log)
         statusListener = listener
         eventRegistry.register(this, listener)
 
@@ -160,6 +162,9 @@ internal constructor(
             try {
                 next.toClientSource()
             } catch (_: IllegalArgumentException) {
+                log.warn("Resource-pack settings rejected (reason=invalid_settings)")
+                return
+            } catch (_: URISyntaxException) {
                 log.warn("Resource-pack settings rejected (reason=invalid_settings)")
                 return
             }

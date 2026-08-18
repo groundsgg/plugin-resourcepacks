@@ -12,7 +12,8 @@ class ResourcePackStatusListenerTest {
     fun `status listener counts all diagnostic categories and logs safe identifiers`() {
         val metrics = ResourcePackMetrics()
         val log = FakeResourcePackLog()
-        val listener = ResourcePackStatusListener(metrics, { _, _ -> "v1.2.3" }, log)
+        val listener =
+            ResourcePackStatusListener(metrics, { _, _ -> true }, { _, _ -> "v1.2.3" }, log)
         val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
         metrics.requested()
@@ -39,6 +40,54 @@ class ResourcePackStatusListenerTest {
         assertEquals(true, log.messages.all { it.contains(player.uniqueId.toString()) })
         assertEquals(true, log.messages.all { it.contains(packId.toString()) })
         assertEquals(true, log.messages.all { it.contains("v1.2.3") })
+    }
+
+    @Test
+    fun `status listener ignores packs not sent by this plugin`() {
+        val metrics = ResourcePackMetrics()
+        val log = FakeResourcePackLog()
+        val listener =
+            ResourcePackStatusListener(
+                metrics,
+                { _, _ -> false },
+                { _, _ -> error("foreign packs must not be attributed") },
+                log,
+            )
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("22222222-2222-2222-2222-222222222222")
+
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                player,
+                packId,
+                PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD,
+                null,
+            )
+        )
+
+        assertEquals(ResourcePackMetricSnapshot(0, 0, 0, 0, 0, 0), metrics.snapshot())
+        assertEquals(emptyList(), log.messages)
+    }
+
+    @Test
+    fun `status listener retains ambiguous attribution for a pack sent by this plugin`() {
+        val metrics = ResourcePackMetrics()
+        val log = FakeResourcePackLog()
+        val listener = ResourcePackStatusListener(metrics, { _, _ -> true }, { _, _ -> null }, log)
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("33333333-3333-3333-3333-333333333333")
+
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                player,
+                packId,
+                PlayerResourcePackStatusEvent.Status.DOWNLOADED,
+                null,
+            )
+        )
+
+        assertEquals(1, metrics.snapshot().downloaded)
+        assertEquals(true, log.messages.single().contains("targetId=unknown"))
     }
 
     // Break caught: regex redaction can miss credentials and arbitrary upstream response bodies in
