@@ -2,6 +2,7 @@ package gg.grounds.resourcepacks.velocity
 
 import com.velocitypowered.api.proxy.Player
 import com.velocitypowered.api.proxy.ProxyServer
+import gg.grounds.config.ConfigDefinition
 import gg.grounds.config.ConfigDefinitionNotReadyException
 import gg.grounds.config.ConfigManager
 import gg.grounds.config.ConfigRegistrationResult
@@ -23,12 +24,16 @@ internal object VelocityPlayerPackSender : PackSender {
 
 internal interface ResourcePackConfigGateway {
     fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult
 
-    fun onChange(listener: (ResourcePackSettings) -> Unit): ResourcePackConfigSubscription
+    fun onChange(
+        definition: ConfigDefinition<ResourcePackSettings>,
+        listener: (ResourcePackSettings) -> Unit,
+    ): ResourcePackConfigSubscription
 }
 
 internal interface ResourcePackConfigSubscription : AutoCloseable {
@@ -37,14 +42,15 @@ internal interface ResourcePackConfigSubscription : AutoCloseable {
 
 internal interface ResourcePackConfigBackend {
     fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult
 
-    fun current(): ResourcePackSettings
+    fun current(definition: ConfigDefinition<ResourcePackSettings>): ResourcePackSettings
 
-    fun onChange(listener: () -> Unit)
+    fun onChange(definition: ConfigDefinition<ResourcePackSettings>, listener: () -> Unit)
 }
 
 private class VelocityResourcePackConfigBackend(private val proxy: ProxyServer) :
@@ -52,18 +58,23 @@ private class VelocityResourcePackConfigBackend(private val proxy: ProxyServer) 
     private lateinit var manager: ConfigManager
 
     override fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult {
         manager = VelocityConfigManagerServices.require(proxy)
-        return manager.register(ResourcePackSettingsDefinition, app, environment, mode)
+        return manager.register(definition, app, environment, mode)
     }
 
-    override fun current(): ResourcePackSettings = manager[ResourcePackSettingsDefinition]
+    override fun current(definition: ConfigDefinition<ResourcePackSettings>): ResourcePackSettings =
+        manager[definition]
 
-    override fun onChange(listener: () -> Unit) {
-        manager.onChange(ResourcePackSettingsDefinition) { listener() }
+    override fun onChange(
+        definition: ConfigDefinition<ResourcePackSettings>,
+        listener: () -> Unit,
+    ) {
+        manager.onChange(definition) { listener() }
     }
 }
 
@@ -72,22 +83,25 @@ internal class VelocityResourcePackConfigGateway(private val backend: ResourcePa
     constructor(proxy: ProxyServer) : this(VelocityResourcePackConfigBackend(proxy))
 
     override fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
-    ): ConfigRegistrationResult = backend.register(app, environment, mode)
+    ): ConfigRegistrationResult = backend.register(definition, app, environment, mode)
 
     override fun onChange(
-        listener: (ResourcePackSettings) -> Unit
+        definition: ConfigDefinition<ResourcePackSettings>,
+        listener: (ResourcePackSettings) -> Unit,
     ): ResourcePackConfigSubscription {
-        val subscription = SerializedResourcePackConfigSubscription(backend, listener)
-        backend.onChange(subscription::deliverLatestIfAvailable)
+        val subscription = SerializedResourcePackConfigSubscription(backend, definition, listener)
+        backend.onChange(definition, subscription::deliverLatestIfAvailable)
         return subscription
     }
 }
 
 private class SerializedResourcePackConfigSubscription(
     private val backend: ResourcePackConfigBackend,
+    private val definition: ConfigDefinition<ResourcePackSettings>,
     listener: (ResourcePackSettings) -> Unit,
 ) : ResourcePackConfigSubscription {
     private val activeListener = AtomicReference<(ResourcePackSettings) -> Unit>(listener)
@@ -99,9 +113,9 @@ private class SerializedResourcePackConfigSubscription(
         val deliveryId = latestDelivery.incrementAndGet()
         val current =
             try {
-                backend.current()
+                backend.current(definition)
             } catch (failure: ConfigDefinitionNotReadyException) {
-                if (failure.definition !== ResourcePackSettingsDefinition) throw failure
+                if (failure.definition !== definition) throw failure
                 return
             }
         synchronized(delivery) {

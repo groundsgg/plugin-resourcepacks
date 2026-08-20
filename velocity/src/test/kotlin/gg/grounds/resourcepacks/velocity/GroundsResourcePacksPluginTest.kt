@@ -6,6 +6,7 @@ import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
 import com.velocitypowered.api.plugin.Plugin
 import com.velocitypowered.api.proxy.Player
+import gg.grounds.config.ConfigDefinition
 import gg.grounds.config.ConfigDefinitionNotReadyException
 import gg.grounds.config.ConfigRegistrationResult
 import gg.grounds.config.ConfigStartupMode
@@ -98,6 +99,71 @@ class GroundsResourcePacksPluginTest {
         assertFalse(log.messages.joinToString().contains("top-secret"))
         assertTrue(log.messages.single().contains("reason=unknown_failure"))
         assertNull(plugin.runtimeStatus().currentFingerprint)
+    }
+
+    // Break caught: Stage can register the approved Stable static default after selecting Edge,
+    // or later config reads can switch to a second definition instance.
+    @Test
+    fun `edge bootstrap registers and observes one edge definition in the stage scope`() {
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready())
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                {
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "RESOURCE_PACK_DEFAULT_CHANNEL" to "edge",
+                    )
+                },
+                gateway,
+                FakeClientFactory(),
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                FakeEventRegistry(),
+                FakeResourcePackLog(),
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        assertEquals(1, gateway.registrations)
+        assertEquals(
+            Registration("network", "stage", ConfigStartupMode.DEGRADED),
+            gateway.registration,
+        )
+        assertEquals("edge", gateway.registeredDefinition!!.defaultValue.source.channel)
+        assertSame(gateway.registeredDefinition, gateway.observedDefinition)
+    }
+
+    // Break caught: a malformed deployment variable can partially initialize listeners or CDN
+    // client state before refusing an unsafe default.
+    @Test
+    fun `invalid bootstrap channel fails before registration listener installation or client creation`() {
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready())
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val plugin =
+            GroundsResourcePacksPlugin(
+                Files.createTempDirectory("resourcepacks-plugin-test"),
+                {
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "RESOURCE_PACK_DEFAULT_CHANNEL" to "EDGE",
+                    )
+                },
+                gateway,
+                clients,
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                events,
+                FakeResourcePackLog(),
+            )
+
+        assertFailsWith<IllegalArgumentException> { plugin.onInitialize(ProxyInitializeEvent()) }
+
+        assertNull(gateway.registration)
+        assertFalse(gateway.subscribed)
+        assertEquals(emptyList(), events.registered)
+        assertEquals(emptyList(), clients.created)
     }
 
     // Break caught: NOT_READY can become valid after register returns but before callback
@@ -636,12 +702,13 @@ internal class FakeResourcePackConfigBackend(
     val releaseCurrentRead = CountDownLatch(1)
 
     override fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult = registrationResult
 
-    override fun current(): ResourcePackSettings {
+    override fun current(definition: ConfigDefinition<ResourcePackSettings>): ResourcePackSettings {
         currentReads += 1
         currentReadFailure?.let { throw it }
         val captured = current
@@ -649,10 +716,13 @@ internal class FakeResourcePackConfigBackend(
             currentReadEntered.countDown()
             releaseCurrentRead.await(1, TimeUnit.SECONDS)
         }
-        return captured ?: throw ConfigDefinitionNotReadyException(ResourcePackSettingsDefinition)
+        return captured ?: throw ConfigDefinitionNotReadyException(definition)
     }
 
-    override fun onChange(listener: () -> Unit) {
+    override fun onChange(
+        definition: ConfigDefinition<ResourcePackSettings>,
+        listener: () -> Unit,
+    ) {
         beforeListenerInstallation?.let { current = it }
         this.listener = listener
         duringSubscription?.let {
@@ -699,16 +769,22 @@ internal class FakeConfigGateway(
     private var current: ResourcePackSettings? = null,
 ) : ResourcePackConfigGateway {
     var registration: Registration? = null
+    var registrations = 0
+    var registeredDefinition: ConfigDefinition<ResourcePackSettings>? = null
+    var observedDefinition: ConfigDefinition<ResourcePackSettings>? = null
     var currentReads = 0
     var subscribed = false
     var listenerClosed = false
     private var listener: ((ResourcePackSettings) -> Unit)? = null
 
     override fun register(
+        definition: ConfigDefinition<ResourcePackSettings>,
         app: String,
         environment: String,
         mode: ConfigStartupMode,
     ): ConfigRegistrationResult {
+        registrations += 1
+        registeredDefinition = definition
         registration = Registration(app, environment, mode)
         return result
     }
@@ -719,8 +795,10 @@ internal class FakeConfigGateway(
     }
 
     override fun onChange(
-        listener: (ResourcePackSettings) -> Unit
+        definition: ConfigDefinition<ResourcePackSettings>,
+        listener: (ResourcePackSettings) -> Unit,
     ): ResourcePackConfigSubscription {
+        observedDefinition = definition
         subscribed = true
         this.listener = listener
         return object : ResourcePackConfigSubscription {

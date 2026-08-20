@@ -80,20 +80,22 @@ internal constructor(
     @Subscribe
     fun onInitialize(@Suppress("UNUSED_PARAMETER") event: ProxyInitializeEvent) {
         if (!initialized.compareAndSet(false, true)) return
+        val deployment = environment()
+        val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
+        val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
             ResourcePackStatusListener(metrics, coordinator::ownsPack, coordinator::targetId, log)
         statusListener = listener
         eventRegistry.register(this, listener)
 
-        val deploymentEnvironment =
-            ResourcePackEnvironment.from(environment()).deploymentEnvironment
         val result =
             configGateway.register(
+                definition = definition,
                 app = "network",
                 environment = deploymentEnvironment,
                 mode = ConfigStartupMode.DEGRADED,
             )
-        val subscription = configGateway.onChange(::applySettings)
+        val subscription = configGateway.onChange(definition, ::applySettings)
         configListener = subscription
         if (!result.isUsable()) {
             log.warn(

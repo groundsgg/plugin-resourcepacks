@@ -4,6 +4,7 @@ import gg.grounds.resourcepacks.contract.PackSetChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class ResourcePackSettingsTest {
     @Test
@@ -25,6 +26,57 @@ class ResourcePackSettingsTest {
         assertEquals("global", ResourcePackSettingsDefinition.key)
         assertEquals(ResourcePackSettings::class.java, ResourcePackSettingsDefinition.type)
         assertEquals(ResourcePackSettings(), ResourcePackSettingsDefinition.defaultValue)
+    }
+
+    // Break caught: the stage bootstrap can silently select Stable, or an unrelated setting can
+    // drift while deriving the Edge default.
+    @Test
+    fun `bootstrap channel creates an edge definition with only the source channel changed`() {
+        val definition = resourcePackSettingsDefinition(PackSetChannel.EDGE)
+
+        assertEquals("resourcepacks", definition.namespace)
+        assertEquals("global", definition.key)
+        assertEquals(ResourcePackSettings::class.java, definition.type)
+        assertEquals(
+            ResourcePackSettings(
+                source =
+                    ResourcePackSourceSettings(
+                        baseUrl = "https://cdn.grounds.gg",
+                        packSet = "grounds-global",
+                        channel = "edge",
+                    )
+            ),
+            definition.defaultValue,
+        )
+    }
+
+    // Break caught: an absent bootstrap variable can prevent normal Stable deployments from
+    // registering their approved default.
+    @Test
+    fun `bootstrap channel defaults to stable when absent`() {
+        assertEquals(PackSetChannel.STABLE, bootstrapPackSetChannel(emptyMap()))
+    }
+
+    // Break caught: the deployment value can be normalized instead of enforcing the exact
+    // configuration contract.
+    @Test
+    fun `bootstrap channel accepts only exact stable and edge values`() {
+        assertEquals(
+            PackSetChannel.STABLE,
+            bootstrapPackSetChannel(mapOf("RESOURCE_PACK_DEFAULT_CHANNEL" to "stable")),
+        )
+        assertEquals(
+            PackSetChannel.EDGE,
+            bootstrapPackSetChannel(mapOf("RESOURCE_PACK_DEFAULT_CHANNEL" to "edge")),
+        )
+
+        listOf("", " Edge", "EDGE", "preview").forEach { value ->
+            val failure =
+                assertFailsWith<IllegalArgumentException> {
+                    bootstrapPackSetChannel(mapOf("RESOURCE_PACK_DEFAULT_CHANNEL" to value))
+                }
+            assertTrue(failure.message.orEmpty().contains("Invalid RESOURCE_PACK_DEFAULT_CHANNEL"))
+        }
     }
 
     @Test

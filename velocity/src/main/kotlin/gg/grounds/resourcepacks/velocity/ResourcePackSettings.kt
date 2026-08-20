@@ -38,3 +38,31 @@ object ResourcePackSettingsDefinition :
         type = ResourcePackSettings::class.java,
         defaultValue = ResourcePackSettings(),
     )
+
+internal fun resourcePackSettingsDefinition(
+    bootstrapChannel: PackSetChannel
+): ConfigDefinition<ResourcePackSettings> =
+    object :
+        ConfigDefinition<ResourcePackSettings>(
+            namespace = "resourcepacks",
+            key = "global",
+            type = ResourcePackSettings::class.java,
+            defaultValue =
+                ResourcePackSettings(
+                    source =
+                        ResourcePackSourceSettings(
+                            channel =
+                                when (bootstrapChannel) {
+                                    PackSetChannel.STABLE -> "stable"
+                                    PackSetChannel.EDGE -> "edge"
+                                }
+                        )
+                ),
+        ) {}
+
+internal fun bootstrapPackSetChannel(environment: Map<String, String>): PackSetChannel =
+    when (environment["RESOURCE_PACK_DEFAULT_CHANNEL"] ?: "stable") {
+        "stable" -> PackSetChannel.STABLE
+        "edge" -> PackSetChannel.EDGE
+        else -> throw IllegalArgumentException("Invalid RESOURCE_PACK_DEFAULT_CHANNEL")
+    }
