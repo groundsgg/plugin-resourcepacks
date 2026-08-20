@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.1...v0.1.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** grant SBOM asset permission ([eecf86f](https://github.com/groundsgg/plugin-resourcepacks/commit/eecf86f5c17f10ed1eb6634e0589cf185095b693))
+* **release:** grant SBOM asset permission ([365f86a](https://github.com/groundsgg/plugin-resourcepacks/commit/365f86a7b4bdc2ff41791f454110029950b1e679))
+
 ## [0.1.1](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.0...v0.1.1) (2026-08-20)
 
 
