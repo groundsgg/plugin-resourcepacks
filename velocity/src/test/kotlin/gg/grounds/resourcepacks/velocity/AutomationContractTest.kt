@@ -161,6 +161,10 @@ class AutomationContractTest {
             mapOf("contents" to "read", "packages" to "write"),
             mapping(reusable, "permissions"),
         )
+        assertEquals(
+            "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
+            scalar(mapping(reusable, "secrets"), "PACKAGES_TOKEN"),
+        )
         val docker = mapping(jobs, "docker")
         assertEquals(
             "groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main",
@@ -170,9 +174,9 @@ class AutomationContractTest {
             mapOf("contents" to "read", "packages" to "write"),
             mapping(docker, "permissions"),
         )
-        assertFalse(
-            docker.containsKey("secrets"),
-            "Docker release must use only built-in GitHub credentials",
+        assertEquals(
+            "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
+            scalar(mapping(docker, "secrets"), "PACKAGES_TOKEN"),
         )
     }
 
@@ -317,7 +321,10 @@ class AutomationContractTest {
             setOf("GROUNDS_PACKAGES_TOKEN"),
             secretReferences(workflows.getValue("ci.yml")),
         )
-        assertEquals(emptySet(), secretReferences(workflows.getValue("release.yml")))
+        assertEquals(
+            setOf("GROUNDS_PACKAGES_TOKEN"),
+            secretReferences(workflows.getValue("release.yml")),
+        )
         assertEquals(emptySet(), secretReferences(workflows.getValue("labels.yml")))
         assertEquals(
             setOf("RELEASE_PLEASE_TOKEN"),
