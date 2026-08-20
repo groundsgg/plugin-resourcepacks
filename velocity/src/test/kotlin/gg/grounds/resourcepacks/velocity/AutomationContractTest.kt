@@ -171,7 +171,7 @@ class AutomationContractTest {
             scalar(docker, "uses"),
         )
         assertEquals(
-            mapOf("contents" to "read", "packages" to "write"),
+            mapOf("contents" to "write", "packages" to "write"),
             mapping(docker, "permissions"),
         )
         assertEquals(

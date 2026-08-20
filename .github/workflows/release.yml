@@ -15,7 +15,7 @@ jobs:
 
   docker:
     permissions:
-      contents: read
+      contents: write
       packages: write
     secrets:
       PACKAGES_TOKEN: ${{ secrets.GROUNDS_PACKAGES_TOKEN }}
