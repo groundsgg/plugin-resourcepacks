@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.0...v0.1.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** constrain package credential forwarding ([4d9d155](https://github.com/groundsgg/plugin-resourcepacks/commit/4d9d155342f9216a9c63ca75602eb97c8b51c075))
+* **release:** constrain package credential forwarding ([45d5e46](https://github.com/groundsgg/plugin-resourcepacks/commit/45d5e46584b4d5d43efa6c7771c0cb2cf8c5e440))
+
 ## 0.1.0 (2026-08-20)
 
 
