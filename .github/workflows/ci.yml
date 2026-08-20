@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GITHUB_ACTOR: ${{ github.actor }}
+      GITHUB_TOKEN: ${{ secrets.GROUNDS_PACKAGES_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Verify clean build
+        run: ./gradlew --no-build-cache clean check
+
+  reusable:
+    needs: verify
+    permissions:
+      contents: read
+      packages: read
+    secrets:
+      PACKAGES_TOKEN: ${{ secrets.GROUNDS_PACKAGES_TOKEN }}
+    uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
