@@ -141,8 +141,8 @@ class AutomationContractTest {
             mapping(reusable, "permissions"),
         )
         assertEquals(
-            "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
-            scalar(mapping(reusable, "secrets"), "PACKAGES_TOKEN"),
+            mapOf("PACKAGES_TOKEN" to "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}"),
+            mapping(reusable, "secrets"),
         )
     }
 
@@ -175,8 +175,8 @@ class AutomationContractTest {
             mapping(docker, "permissions"),
         )
         assertEquals(
-            "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
-            scalar(mapping(docker, "secrets"), "PACKAGES_TOKEN"),
+            mapOf("PACKAGES_TOKEN" to "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}"),
+            mapping(docker, "secrets"),
         )
     }
 
