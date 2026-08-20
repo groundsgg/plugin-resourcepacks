@@ -102,7 +102,7 @@ class AutomationContractTest {
         assertEquals(
             mapOf(
                 "GITHUB_ACTOR" to "${'$'}{{ github.actor }}",
-                "GITHUB_TOKEN" to "${'$'}{{ github.token }}",
+                "GITHUB_TOKEN" to "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
             ),
             mapping(verify, "env"),
         )
@@ -139,6 +139,10 @@ class AutomationContractTest {
         assertEquals(
             mapOf("contents" to "read", "packages" to "read"),
             mapping(reusable, "permissions"),
+        )
+        assertEquals(
+            "${'$'}{{ secrets.GROUNDS_PACKAGES_TOKEN }}",
+            scalar(mapping(reusable, "secrets"), "PACKAGES_TOKEN"),
         )
     }
 
@@ -309,7 +313,10 @@ class AutomationContractTest {
             root.resolve(".github/workflows").toFile().listFiles()!!.associate { workflow ->
                 workflow.name to parseText(workflow.readText())
             }
-        assertEquals(emptySet(), secretReferences(workflows.getValue("ci.yml")))
+        assertEquals(
+            setOf("GROUNDS_PACKAGES_TOKEN"),
+            secretReferences(workflows.getValue("ci.yml")),
+        )
         assertEquals(emptySet(), secretReferences(workflows.getValue("release.yml")))
         assertEquals(emptySet(), secretReferences(workflows.getValue("labels.yml")))
         assertEquals(
