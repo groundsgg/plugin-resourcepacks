@@ -116,6 +116,10 @@ class ResourcePackStatusListenerTest {
     fun `diagnostic reasons retain only explicitly controlled categories`() {
         assertEquals("channel_request_failed", normalizeDiagnosticReason("Channel request failed."))
         assertEquals(
+            "cache_directory_sync_failed",
+            normalizeDiagnosticReason("Cache directory sync failed."),
+        )
+        assertEquals(
             "bootstrap_failed_no_cached_snapshot",
             normalizeDiagnosticReason("bootstrap_failed_no_cached_snapshot"),
         )

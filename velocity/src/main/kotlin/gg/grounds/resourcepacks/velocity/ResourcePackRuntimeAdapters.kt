@@ -203,6 +203,7 @@ private val SAFE_DIAGNOSTIC_REASONS =
         "Channel request failed." to "channel_request_failed",
         "Manifest request failed." to "manifest_request_failed",
         "Cache write failed." to "cache_write_failed",
+        "Cache directory sync failed." to "cache_directory_sync_failed",
         "Refresh failed." to "refresh_failed",
         "Refresh scheduler was unavailable." to "refresh_scheduler_unavailable",
         "Client is closed." to "client_closed",
