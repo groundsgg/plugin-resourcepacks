@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.3...v0.1.4) (2026-08-21)
+
+
+### Bug Fixes
+
+* create resourcepack plugin data directory ([#10](https://github.com/groundsgg/plugin-resourcepacks/issues/10)) ([027b71a](https://github.com/groundsgg/plugin-resourcepacks/commit/027b71a2dd2470b9a0baa489e72a0bf5143e2072))
+
 ## [0.1.3](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.2...v0.1.3) (2026-08-21)
 
 
