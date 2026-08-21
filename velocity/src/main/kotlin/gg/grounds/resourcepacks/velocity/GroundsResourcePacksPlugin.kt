@@ -15,6 +15,7 @@ import gg.grounds.generated.BuildInfo
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
 import java.net.URISyntaxException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -179,6 +180,7 @@ internal constructor(
                     val previous = configured.get()
                     val existing = client
                     if (existing == null) {
+                        Files.createDirectories(dataDirectory)
                         val created =
                             clientFactory.create(nextSource, dataDirectory.resolve("packset-cache"))
                         clientListener = created.addListener(::onClientState)
