@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.2...v0.1.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* report resourcepack cache sync failures ([#8](https://github.com/groundsgg/plugin-resourcepacks/issues/8)) ([4740859](https://github.com/groundsgg/plugin-resourcepacks/commit/47408598b45184041ea6ff4e48d694c33c822c57))
+
 ## [0.1.2](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.1...v0.1.2) (2026-08-20)
 
 
