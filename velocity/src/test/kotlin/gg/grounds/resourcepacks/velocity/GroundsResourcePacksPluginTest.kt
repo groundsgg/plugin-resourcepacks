@@ -270,7 +270,8 @@ class GroundsResourcePacksPluginTest {
     fun `first valid change lazily creates and starts exactly one cached client`() {
         val gateway = FakeConfigGateway(ConfigRegistrationResult.notReady("bootstrap_unavailable"))
         val clients = FakeClientFactory()
-        val directory = Files.createTempDirectory("resourcepacks-plugin-test")
+        val directory =
+            Files.createTempDirectory("resourcepacks-plugin-test").resolve("plugin-resourcepacks")
         val plugin = plugin(gateway, clients, directory = directory)
         plugin.onInitialize(ProxyInitializeEvent())
 
@@ -278,6 +279,7 @@ class GroundsResourcePacksPluginTest {
         gateway.emit(settings(prompt = "changed"))
 
         assertEquals(1, clients.created.size)
+        assertTrue(Files.isDirectory(directory))
         assertEquals(directory.resolve("packset-cache"), clients.cacheDirectories.single())
         assertEquals(1, clients.created.single().starts)
         assertEquals(0, clients.created.single().reconfigurations.size)
