@@ -1,7 +1,9 @@
 package gg.grounds.resourcepacks.velocity
 
+import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.PostLoginEvent
 import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
+import com.velocitypowered.api.event.player.ServerPostConnectEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
 import com.velocitypowered.api.plugin.Plugin
@@ -74,6 +76,26 @@ class GroundsResourcePacksPluginTest {
         VelocityPlayerPackSender.send(player, request)
 
         assertSame(request, received)
+    }
+
+    // Break caught: sending during PostLogin lets the initial backend transition discard the
+    // prompt before the player can answer it.
+    @Test
+    fun `resourcepacks wait for the initial backend connection before sending`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<ResourcePackRequest>()
+        val plugin = plugin(gateway, clients, sender = PackSender { _, request -> sent += request })
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+
+        fireSubscribed(plugin, PostLoginEvent(online))
+        assertEquals(0, sent.size)
+
+        fireSubscribed(plugin, ServerPostConnectEvent(online, null))
+        assertEquals(1, sent.size)
     }
 
     // Break caught: degraded NOT_READY must not manufacture defaults or start CDN I/O.
@@ -325,7 +347,7 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial)))
-        plugin.onLogin(PostLoginEvent(online))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
 
         gateway.emit(initial.copy(prompt = "second"))
         gateway.emit(initial.copy(prompt = "second", required = false))
@@ -521,7 +543,7 @@ class GroundsResourcePacksPluginTest {
         clients.created
             .single()
             .emit(degradedState(initial, fallback).copy(lastError = "token=do-not-log offline"))
-        plugin.onLogin(PostLoginEvent(online))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
         val statusListener = events.registered.single().second as ResourcePackStatusListener
         statusListener.onStatus(
             PlayerResourcePackStatusEvent(
@@ -700,6 +722,17 @@ class GroundsResourcePacksPluginTest {
             eventRegistry = events,
             log = log,
         )
+
+    private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
+        GroundsResourcePacksPlugin::class
+            .java
+            .declaredMethods
+            .filter { method ->
+                method.getAnnotation(Subscribe::class.java) != null &&
+                    method.parameterTypes.contentEquals(arrayOf(event.javaClass))
+            }
+            .forEach { method -> method.invoke(plugin, event) }
+    }
 }
 
 internal class FakeResourcePackConfigBackend(
