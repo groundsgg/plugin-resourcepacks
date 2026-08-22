@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import tools.jackson.databind.ObjectMapper
 
 class ResourcePackSettingsTest {
     @Test
@@ -18,6 +19,17 @@ class ResourcePackSettingsTest {
         assertEquals("stable", settings.source.channel)
         assertEquals(true, settings.required)
         assertEquals("Grounds benötigt seine Resourcepacks.", settings.prompt)
+    }
+
+    // Break caught: plugin-config deserializes consumer-owned classes without Kotlin metadata
+    // when Velocity isolates plugin class loaders.
+    @Test
+    fun `plain Jackson applies the configured nested edge channel`() {
+        val settings =
+            ObjectMapper()
+                .readValue("""{"source":{"channel":"edge"}}""", ResourcePackSettings::class.java)
+
+        assertEquals("edge", settings.source.channel)
     }
 
     @Test

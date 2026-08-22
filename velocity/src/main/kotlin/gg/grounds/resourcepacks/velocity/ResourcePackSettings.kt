@@ -6,17 +6,17 @@ import gg.grounds.resourcepacks.contract.PackSetChannel
 import java.net.URI
 
 data class ResourcePackSourceSettings(
-    val baseUrl: String = "https://cdn.grounds.gg",
-    val packSet: String = "grounds-global",
-    val channel: String = "stable",
+    var baseUrl: String = "https://cdn.grounds.gg",
+    var packSet: String = "grounds-global",
+    var channel: String = "stable",
 )
 
 data class ResourcePackSettings(
-    val schemaVersion: Int = 1,
-    val enabled: Boolean = true,
-    val source: ResourcePackSourceSettings = ResourcePackSourceSettings(),
-    val required: Boolean = true,
-    val prompt: String = "Grounds benötigt seine Resourcepacks.",
+    var schemaVersion: Int = 1,
+    var enabled: Boolean = true,
+    var source: ResourcePackSourceSettings = ResourcePackSourceSettings(),
+    var required: Boolean = true,
+    var prompt: String = "Grounds benötigt seine Resourcepacks.",
 ) {
     fun toClientSource(): PackSetSource =
         PackSetSource(
