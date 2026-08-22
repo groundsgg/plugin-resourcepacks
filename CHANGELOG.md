@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.4...v0.1.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* log effective resourcepack channel ([#12](https://github.com/groundsgg/plugin-resourcepacks/issues/12)) ([9ab8300](https://github.com/groundsgg/plugin-resourcepacks/commit/9ab8300cc3d22c6890066cefb7353b2df1ac4f50))
+
 ## [0.1.4](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.3...v0.1.4) (2026-08-21)
 
 
