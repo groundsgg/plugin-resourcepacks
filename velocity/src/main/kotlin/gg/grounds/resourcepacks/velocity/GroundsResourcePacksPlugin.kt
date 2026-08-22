@@ -71,6 +71,13 @@ internal constructor(
                 metrics.requested()
             },
             VelocityPackRequestFactory(),
+            ResourcePackDeliveryObserver { player, prepared ->
+                log.info(
+                    "Resource-pack request sent (playerId=${player.uniqueId}, " +
+                        "targetId=${prepared.targetId}, fingerprint=${prepared.fingerprint}, " +
+                        "packCount=${prepared.packIds.size})"
+                )
+            },
         )
 
     private var client: ResourcePackClient? = null
@@ -172,6 +179,11 @@ internal constructor(
                 return
             }
 
+        log.info(
+            "Resource-pack settings applied (channel=${nextSource.channel.name.lowercase()}, " +
+                "enabled=${next.enabled}, required=${next.required})"
+        )
+
         coordinator.reconcileSettings(next) {
             synchronized(lifecycle) {
                 if (stopped.get()) {
@@ -208,6 +220,7 @@ internal constructor(
         if (next.status in LOGGED_STATES && previousStatus != next.status) {
             log.info(
                 "Resource-pack client transition (status=${next.status}, " +
+                    "sourceChannel=${next.source.channel.name.lowercase()}, " +
                     "currentFingerprint=${next.current?.fingerprint}, " +
                     "fallbackFingerprint=${next.degradedFallback?.fingerprint}, " +
                     "reason=${normalizeDiagnosticReason(next.lastError)})"

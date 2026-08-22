@@ -65,6 +65,32 @@ class ResourcePackCoordinatorTest {
         assertEquals(2, stateReads)
     }
 
+    // Break caught: diagnostics must only claim a request was sent after Velocity accepts it.
+    @Test
+    fun `successful send reports the prepared target and fingerprint`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var observed: PreparedPackRequest? = null
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> },
+                VelocityPackRequestFactory(),
+                ResourcePackDeliveryObserver { _, prepared -> observed = prepared },
+            )
+
+        coordinator.onLogin(player)
+
+        assertEquals("v1.0.1", observed?.targetId)
+        assertEquals(
+            VelocityPackRequestFactory().fingerprint(settings, state),
+            observed?.fingerprint,
+        )
+    }
+
     // Break caught: the same client state notification can otherwise resend an identical offer.
     @Test
     fun `same fingerprint is suppressed and changed snapshot resends all online players once`() {
