@@ -13,12 +13,19 @@ fun interface PackSender {
     fun send(player: Player, request: net.kyori.adventure.resource.ResourcePackRequest)
 }
 
-class ResourcePackCoordinator(
+internal fun interface ResourcePackDeliveryObserver {
+    fun sent(player: Player, prepared: PreparedPackRequest)
+}
+
+internal class ResourcePackCoordinator(
     private val settings: () -> ResourcePackSettings?,
     private val clientState: () -> PackSetClientState,
     private val players: OnlinePlayerView,
     private val sender: PackSender,
     private val requestFactory: VelocityPackRequestFactory,
+    private val deliveryObserver: ResourcePackDeliveryObserver =
+        ResourcePackDeliveryObserver { _, _ ->
+        },
 ) {
     private val delivery = Any()
     private val sent = ConcurrentHashMap<UUID, String>()
@@ -111,6 +118,11 @@ class ResourcePackCoordinator(
                 } catch (failure: Exception) {
                     if (isolateSendFailure) return@compute existing
                     throw failure
+                }
+                try {
+                    deliveryObserver.sent(player, prepared)
+                } catch (_: Exception) {
+                    // Diagnostics must not change the delivery result.
                 }
                 prepared.packIds.forEach { packId ->
                     val key = PlayerPack(player.uniqueId, packId)

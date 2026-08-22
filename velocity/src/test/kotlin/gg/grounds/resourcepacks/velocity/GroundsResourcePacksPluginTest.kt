@@ -199,10 +199,11 @@ class GroundsResourcePacksPluginTest {
         assertEquals(1, client.starts)
         assertEquals(emptyList(), client.reconfigurations)
         assertEquals(1, backend.currentReads)
-        assertEquals(
-            "Resource-pack configuration not ready (status=NOT_READY, " +
-                "reason=bootstrap_failed_no_cached_snapshot)",
-            log.messages.single(),
+        assertTrue(
+            log.messages.contains(
+                "Resource-pack configuration not ready (status=NOT_READY, " +
+                    "reason=bootstrap_failed_no_cached_snapshot)"
+            )
         )
     }
 
@@ -368,7 +369,7 @@ class GroundsResourcePacksPluginTest {
         assertEquals(initial.toClientSource(), client.state().source)
         assertEquals(
             "Resource-pack settings rejected (reason=invalid_settings)",
-            log.messages.single(),
+            log.messages.last(),
         )
     }
 
@@ -663,7 +664,21 @@ class GroundsResourcePacksPluginTest {
         val transitions = log.messages.filter { it.contains("client transition") }
         assertEquals(2, transitions.size)
         assertTrue(transitions.first().contains(first.fingerprint))
+        assertTrue(transitions.first().contains("sourceChannel=stable"))
         assertTrue(transitions.last().contains(second.fingerprint))
+    }
+
+    @Test
+    fun `applied settings log the effective source channel`() {
+        val edge = settings().copy(source = settings().source.copy(channel = "edge"))
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), edge)
+        val clients = FakeClientFactory()
+        val log = FakeResourcePackLog()
+        val plugin = plugin(gateway, clients, log = log)
+
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        assertTrue(log.messages.any { it.contains("settings applied (channel=edge") })
     }
 
     private fun plugin(
