@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.6...v0.1.7) (2026-08-22)
+
+
+### Bug Fixes
+
+* attribute resource packs before sending ([#16](https://github.com/groundsgg/plugin-resourcepacks/issues/16)) ([59f47a3](https://github.com/groundsgg/plugin-resourcepacks/commit/59f47a3212e51e67917ff6444193d8295c07ecee))
+
 ## [0.1.6](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.5...v0.1.6) (2026-08-22)
 
 
