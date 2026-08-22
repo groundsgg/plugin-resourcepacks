@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.7...v0.1.8) (2026-08-22)
+
+
+### Bug Fixes
+
+* send resourcepacks after server connect ([#18](https://github.com/groundsgg/plugin-resourcepacks/issues/18)) ([0036eb5](https://github.com/groundsgg/plugin-resourcepacks/commit/0036eb573ed4779bed221f411b023cbea60964cc))
+
 ## [0.1.7](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.6...v0.1.7) (2026-08-22)
 
 
