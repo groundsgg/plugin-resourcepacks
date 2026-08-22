@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.5...v0.1.6) (2026-08-22)
+
+
+### Bug Fixes
+
+* deserialize resourcepack settings without Kotlin metadata ([#14](https://github.com/groundsgg/plugin-resourcepacks/issues/14)) ([2cbd23d](https://github.com/groundsgg/plugin-resourcepacks/commit/2cbd23d4fdd0bbdeb2a60949eee5f49b2d14e081))
+
 ## [0.1.5](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.4...v0.1.5) (2026-08-22)
 
 
