@@ -23,8 +23,11 @@ import org.slf4j.Logger
 
 @Plugin(
     id = "plugin-resourcepacks",
-    name = "Grounds ResourcePacks",
+    name = "Grounds ResourcePacks Plugin",
     version = BuildInfo.VERSION,
+    description = "Delivers ordered resource-pack requests to players on login",
+    authors = ["Grounds Development Team and contributors"],
+    url = "https://github.com/groundsgg/plugin-resourcepacks",
     dependencies = [Dependency(id = "plugin-config")],
 )
 class GroundsResourcePacksPlugin
