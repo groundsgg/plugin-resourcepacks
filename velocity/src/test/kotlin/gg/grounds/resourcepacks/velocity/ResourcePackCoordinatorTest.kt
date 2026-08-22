@@ -202,6 +202,54 @@ class ResourcePackCoordinatorTest {
         assertEquals(2, attempts)
     }
 
+    // Break caught: a synchronous Velocity status emitted by sendResourcePacks can arrive before
+    // the coordinator records ownership and disappear from diagnostics and metrics.
+    @Test
+    fun `pack ownership is visible while the request is being sent`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        var ownedDuringSend = false
+        lateinit var coordinator: ResourcePackCoordinator
+        coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { emptyList() },
+                PackSender { sentPlayer, _ ->
+                    ownedDuringSend = coordinator.ownsPack(sentPlayer.uniqueId, packId)
+                },
+                VelocityPackRequestFactory(),
+            )
+
+        coordinator.onLogin(player)
+
+        assertTrue(ownedDuringSend)
+    }
+
+    // Break caught: provisional ownership can survive a non-Exception send failure and make a
+    // pack that was never delivered look owned by the coordinator.
+    @Test
+    fun `non exception send failure clears provisional attribution`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                OnlinePlayerView { emptyList() },
+                PackSender { _, _ -> throw AssertionError("send failed") },
+                VelocityPackRequestFactory(),
+            )
+
+        assertFailsWith<AssertionError> { coordinator.onLogin(player) }
+
+        assertNull(coordinator.targetId(player.uniqueId, packId))
+    }
+
     // Break caught: target attribution can be recorded before a failed send or survive the
     // player's disconnect indefinitely.
     @Test

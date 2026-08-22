@@ -30,6 +30,7 @@ internal class ResourcePackCoordinator(
     private val delivery = Any()
     private val sent = ConcurrentHashMap<UUID, String>()
     private val targetAttributions = LinkedHashMap<PlayerPack, TargetAttribution>(16, 0.75f, true)
+    private val pendingTargetAttributions = HashMap<PlayerPack, TargetAttribution>()
     private var currentSettings: ResourcePackSettings? = null
     private var closed = false
 
@@ -77,20 +78,28 @@ internal class ResourcePackCoordinator(
         synchronized(delivery) {
             sent.remove(playerId)
             targetAttributions.keys.removeIf { it.playerId == playerId }
+            pendingTargetAttributions.keys.removeIf { it.playerId == playerId }
         }
     }
 
     internal fun targetId(playerId: UUID, packId: UUID?): String? =
         synchronized(delivery) {
             packId
-                ?.let { targetAttributions[PlayerPack(playerId, it)] }
+                ?.let {
+                    val key = PlayerPack(playerId, it)
+                    pendingTargetAttributions[key] ?: targetAttributions[key]
+                }
                 ?.let { it as? TargetAttribution.Exact }
                 ?.targetId
         }
 
     internal fun ownsPack(playerId: UUID, packId: UUID?): Boolean =
         synchronized(delivery) {
-            packId != null && targetAttributions.containsKey(PlayerPack(playerId, packId))
+            if (packId == null) false
+            else {
+                val key = PlayerPack(playerId, packId)
+                pendingTargetAttributions.containsKey(key) || targetAttributions.containsKey(key)
+            }
         }
 
     internal fun clear() =
@@ -99,6 +108,7 @@ internal class ResourcePackCoordinator(
             currentSettings = null
             sent.clear()
             targetAttributions.clear()
+            pendingTargetAttributions.clear()
         }
 
     private fun dispatchLocked(
@@ -113,27 +123,34 @@ internal class ResourcePackCoordinator(
         sent.compute(player.uniqueId) { _, existing ->
             if (existing == prepared.fingerprint) existing
             else {
+                val provisionalAttributions =
+                    prepared.packIds.associate { packId ->
+                        val key = PlayerPack(player.uniqueId, packId)
+                        val previous =
+                            targetAttributions.entries.firstOrNull { it.key == key }?.value
+                        key to
+                            when (previous) {
+                                null -> TargetAttribution.Exact(prepared.targetId)
+                                is TargetAttribution.Exact ->
+                                    if (previous.targetId == prepared.targetId) previous
+                                    else TargetAttribution.Ambiguous
+                                TargetAttribution.Ambiguous -> TargetAttribution.Ambiguous
+                            }
+                    }
+                pendingTargetAttributions.putAll(provisionalAttributions)
                 try {
                     sender.send(player, prepared.request)
                 } catch (failure: Exception) {
                     if (isolateSendFailure) return@compute existing
                     throw failure
+                } finally {
+                    provisionalAttributions.keys.forEach(pendingTargetAttributions::remove)
                 }
+                targetAttributions.putAll(provisionalAttributions)
                 try {
                     deliveryObserver.sent(player, prepared)
                 } catch (_: Exception) {
                     // Diagnostics must not change the delivery result.
-                }
-                prepared.packIds.forEach { packId ->
-                    val key = PlayerPack(player.uniqueId, packId)
-                    targetAttributions[key] =
-                        when (val previous = targetAttributions[key]) {
-                            null -> TargetAttribution.Exact(prepared.targetId)
-                            is TargetAttribution.Exact ->
-                                if (previous.targetId == prepared.targetId) previous
-                                else TargetAttribution.Ambiguous
-                            TargetAttribution.Ambiguous -> TargetAttribution.Ambiguous
-                        }
                 }
                 while (targetAttributions.size > MAX_STATUS_ATTRIBUTIONS) {
                     targetAttributions.entries.iterator().run {
