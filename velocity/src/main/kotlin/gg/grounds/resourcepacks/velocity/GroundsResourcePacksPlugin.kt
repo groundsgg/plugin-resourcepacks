@@ -3,7 +3,7 @@ package gg.grounds.resourcepacks.velocity
 import com.google.inject.Inject
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
-import com.velocitypowered.api.event.player.ServerPostConnectEvent
+import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
 import com.velocitypowered.api.plugin.Dependency
@@ -118,8 +118,8 @@ internal constructor(
     }
 
     @Subscribe
-    fun onServerPostConnect(event: ServerPostConnectEvent) {
-        if (!stopped.get()) coordinator.onLogin(event.player)
+    fun onPlayerConfiguration(event: PlayerConfigurationEvent) {
+        if (!stopped.get()) coordinator.onLogin(event.player())
     }
 
     @Subscribe
