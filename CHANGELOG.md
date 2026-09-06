@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.9](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.8...v0.1.9) (2026-09-06)
+
+
+### Bug Fixes
+
+* preserve resource pack join prompt ([#22](https://github.com/groundsgg/plugin-resourcepacks/issues/22)) ([c37c720](https://github.com/groundsgg/plugin-resourcepacks/commit/c37c720677197d8ad89d877140b1fbe94dc7bc27))
+* update plugin metadata ([#20](https://github.com/groundsgg/plugin-resourcepacks/issues/20)) ([2e63882](https://github.com/groundsgg/plugin-resourcepacks/commit/2e638823ac5967e12c0f12e6999d3d901df35da7))
+
 ## [0.1.8](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.7...v0.1.8) (2026-08-22)
 
 
