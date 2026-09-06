@@ -1,5 +1,6 @@
 package gg.grounds.resourcepacks.velocity
 
+import com.velocitypowered.api.event.Continuation
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.PostLoginEvent
 import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
@@ -100,6 +101,56 @@ class GroundsResourcePacksPluginTest {
 
         fireSubscribed(plugin, PlayerConfigurationEvent(online, null))
         assertEquals(1, sent.size)
+    }
+
+    // Break caught: returning from PlayerConfigurationEvent before the pack response closes the
+    // client's prompt immediately and continues login without downloading the pack.
+    @Test
+    fun `configuration event resumes only after the resourcepack reaches a terminal status`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val plugin = plugin(gateway, clients, events = events)
+        plugin.onInitialize(ProxyInitializeEvent())
+        val snapshot = snapshot(initial)
+        clients.created.single().emit(readyState(initial, snapshot))
+
+        val task =
+            requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+        var resumed = false
+        task.execute(
+            object : Continuation {
+                override fun resume() {
+                    resumed = true
+                }
+
+                override fun resumeWithException(exception: Throwable) {
+                    throw exception
+                }
+            }
+        )
+        val listener = events.registered.single().second as ResourcePackStatusListener
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                snapshot.packs.single().uuid,
+                PlayerResourcePackStatusEvent.Status.ACCEPTED,
+                null,
+            )
+        )
+        assertFalse(resumed)
+
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                snapshot.packs.single().uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
+        assertTrue(resumed)
     }
 
     // Break caught: degraded NOT_READY must not manufacture defaults or start CDN I/O.

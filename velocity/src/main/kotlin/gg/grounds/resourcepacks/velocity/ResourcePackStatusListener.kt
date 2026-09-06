@@ -9,10 +9,14 @@ internal class ResourcePackStatusListener(
     private val ownsPack: (UUID, UUID?) -> Boolean,
     private val targetId: (UUID, UUID?) -> String?,
     private val log: ResourcePackLog,
+    private val statusObserver: (UUID, UUID?, PlayerResourcePackStatusEvent.Status) -> Unit =
+        { _, _, _ ->
+        },
 ) {
     @Subscribe
     fun onStatus(event: PlayerResourcePackStatusEvent) {
         if (!ownsPack(event.player.uniqueId, event.packId)) return
+        statusObserver(event.player.uniqueId, event.packId, event.status)
         metrics.record(event.status)
         log.info(
             "Resource-pack status (playerId=${event.player.uniqueId}, packId=${event.packId}, " +

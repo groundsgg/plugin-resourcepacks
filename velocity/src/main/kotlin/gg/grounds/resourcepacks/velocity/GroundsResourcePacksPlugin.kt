@@ -1,6 +1,7 @@
 package gg.grounds.resourcepacks.velocity
 
 import com.google.inject.Inject
+import com.velocitypowered.api.event.EventTask
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
 import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
@@ -64,6 +65,7 @@ internal constructor(
     private val configured = AtomicReference<ResourcePackSettings?>(null)
     private val state = AtomicReference(closedState())
     private val lastLoggedStatus = AtomicReference<PackSetClientStatus?>(null)
+    private val configurationWaiter = ResourcePackConfigurationWaiter()
     private val coordinator =
         ResourcePackCoordinator(
             configured::get,
@@ -81,6 +83,9 @@ internal constructor(
                         "packCount=${prepared.packIds.size})"
                 )
             },
+            ResourcePackDeliveryExpectation { player, prepared ->
+                configurationWaiter.expect(player.uniqueId, prepared.packIds)
+            },
         )
 
     private var client: ResourcePackClient? = null
@@ -95,7 +100,13 @@ internal constructor(
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
         val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
-            ResourcePackStatusListener(metrics, coordinator::ownsPack, coordinator::targetId, log)
+            ResourcePackStatusListener(
+                metrics,
+                coordinator::ownsPack,
+                coordinator::targetId,
+                log,
+                configurationWaiter::onStatus,
+            )
         statusListener = listener
         eventRegistry.register(this, listener)
 
@@ -118,12 +129,23 @@ internal constructor(
     }
 
     @Subscribe
-    fun onPlayerConfiguration(event: PlayerConfigurationEvent) {
-        if (!stopped.get()) coordinator.onLogin(event.player())
+    fun onPlayerConfiguration(event: PlayerConfigurationEvent): EventTask? {
+        if (stopped.get()) return null
+        val playerId = event.player().uniqueId
+        val completion = configurationWaiter.begin(playerId)
+        try {
+            coordinator.onLogin(event.player())
+            configurationWaiter.seal(playerId)
+        } catch (failure: Throwable) {
+            configurationWaiter.forget(playerId)
+            throw failure
+        }
+        return if (completion.isDone) null else EventTask.resumeWhenComplete(completion)
     }
 
     @Subscribe
     fun onDisconnect(event: DisconnectEvent) {
+        configurationWaiter.forget(event.player.uniqueId)
         coordinator.forget(event.player.uniqueId)
     }
 
@@ -135,6 +157,7 @@ internal constructor(
         var statusToUnregister: ResourcePackStatusListener? = null
         var clientToClose: ResourcePackClient? = null
         coordinator.clear()
+        configurationWaiter.clear()
         synchronized(lifecycle) {
             configToClose = configListener
             configListener = null
