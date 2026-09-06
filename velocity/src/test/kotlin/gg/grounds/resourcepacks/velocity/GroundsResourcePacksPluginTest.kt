@@ -4,6 +4,7 @@ import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.PostLoginEvent
 import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
 import com.velocitypowered.api.event.player.ServerPostConnectEvent
+import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
 import com.velocitypowered.api.plugin.Plugin
@@ -78,10 +79,10 @@ class GroundsResourcePacksPluginTest {
         assertSame(request, received)
     }
 
-    // Break caught: sending during PostLogin lets the initial backend transition discard the
-    // prompt before the player can answer it.
+    // Break caught: sending outside the client's configuration state can bypass the configured
+    // prompt screen.
     @Test
-    fun `resourcepacks wait for the initial backend connection before sending`() {
+    fun `resourcepacks are sent while Velocity holds the client in configuration`() {
         val initial = settings()
         val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
         val clients = FakeClientFactory()
@@ -95,6 +96,9 @@ class GroundsResourcePacksPluginTest {
         assertEquals(0, sent.size)
 
         fireSubscribed(plugin, ServerPostConnectEvent(online, null))
+        assertEquals(0, sent.size)
+
+        fireSubscribed(plugin, PlayerConfigurationEvent(online, null))
         assertEquals(1, sent.size)
     }
 
@@ -347,7 +351,7 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial)))
-        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
 
         gateway.emit(initial.copy(prompt = "second"))
         gateway.emit(initial.copy(prompt = "second", required = false))
@@ -543,7 +547,7 @@ class GroundsResourcePacksPluginTest {
         clients.created
             .single()
             .emit(degradedState(initial, fallback).copy(lastError = "token=do-not-log offline"))
-        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
         val statusListener = events.registered.single().second as ResourcePackStatusListener
         statusListener.onStatus(
             PlayerResourcePackStatusEvent(
