@@ -91,6 +91,36 @@ class ResourcePackCoordinatorTest {
         )
     }
 
+    // Break caught: a fast client response can arrive before the configuration waiter knows which
+    // pack IDs must finish, leaving the login suspended forever.
+    @Test
+    fun `delivery expectation is registered before sending the request`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var expected = false
+        val coordinator =
+            ResourcePackCoordinator(
+                settings = { settings },
+                clientState = { state },
+                players = OnlinePlayerView { emptyList() },
+                sender = PackSender { _, _ -> assertTrue(expected) },
+                requestFactory = VelocityPackRequestFactory(),
+                deliveryExpectation =
+                    ResourcePackDeliveryExpectation { _, prepared ->
+                        assertEquals(
+                            state.current!!.packs.map { it.uuid }.toSet(),
+                            prepared.packIds,
+                        )
+                        expected = true
+                    },
+            )
+
+        coordinator.onLogin(player)
+
+        assertTrue(expected)
+    }
+
     // Break caught: the same client state notification can otherwise resend an identical offer.
     @Test
     fun `same fingerprint is suppressed and changed snapshot resends all online players once`() {

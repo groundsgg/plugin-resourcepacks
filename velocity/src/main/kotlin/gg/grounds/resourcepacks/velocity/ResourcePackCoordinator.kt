@@ -17,6 +17,10 @@ internal fun interface ResourcePackDeliveryObserver {
     fun sent(player: Player, prepared: PreparedPackRequest)
 }
 
+internal fun interface ResourcePackDeliveryExpectation {
+    fun expect(player: Player, prepared: PreparedPackRequest)
+}
+
 internal class ResourcePackCoordinator(
     private val settings: () -> ResourcePackSettings?,
     private val clientState: () -> PackSetClientState,
@@ -25,6 +29,9 @@ internal class ResourcePackCoordinator(
     private val requestFactory: VelocityPackRequestFactory,
     private val deliveryObserver: ResourcePackDeliveryObserver =
         ResourcePackDeliveryObserver { _, _ ->
+        },
+    private val deliveryExpectation: ResourcePackDeliveryExpectation =
+        ResourcePackDeliveryExpectation { _, _ ->
         },
 ) {
     private val delivery = Any()
@@ -139,6 +146,7 @@ internal class ResourcePackCoordinator(
                     }
                 pendingTargetAttributions.putAll(provisionalAttributions)
                 try {
+                    deliveryExpectation.expect(player, prepared)
                     sender.send(player, prepared.request)
                 } catch (failure: Exception) {
                     if (isolateSendFailure) return@compute existing
