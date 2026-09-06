@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.9...v0.1.10) (2026-09-06)
+
+
+### Bug Fixes
+
+* await resource pack response during configuration ([#23](https://github.com/groundsgg/plugin-resourcepacks/issues/23)) ([15d3cb2](https://github.com/groundsgg/plugin-resourcepacks/commit/15d3cb2b081fcd850339f01fb2ac88a626db7daf))
+
 ## [0.1.9](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.8...v0.1.9) (2026-09-06)
 
 
