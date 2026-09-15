@@ -132,16 +132,10 @@ class ResourcePackCoordinatorTest {
         state = readyState(settings, snapshot(settings, sequence = 2))
         coordinator.onSnapshot(state)
 
-        assertEquals(
-            listOf(first.uniqueId, second.uniqueId),
-            sent.map { it.first },
-        )
+        assertEquals(listOf(first.uniqueId, second.uniqueId), sent.map { it.first })
         coordinator.onServerSwitch(first)
         coordinator.onServerSwitch(first)
-        assertEquals(
-            listOf(first.uniqueId, second.uniqueId, first.uniqueId),
-            sent.map { it.first },
-        )
+        assertEquals(listOf(first.uniqueId, second.uniqueId, first.uniqueId), sent.map { it.first })
         coordinator.onServerSwitch(second)
         assertEquals(
             listOf(first.uniqueId, second.uniqueId, first.uniqueId, second.uniqueId),
@@ -524,10 +518,7 @@ class ResourcePackCoordinatorTest {
         settings = settings.copy(enabled = true)
         coordinator.onSettingsChanged(settings)
 
-        assertEquals(
-            listOf(true to "first"),
-            requests,
-        )
+        assertEquals(listOf(true to "first"), requests)
     }
 
     // Break caught: a retained old-source fallback may leak during source reconciliation.

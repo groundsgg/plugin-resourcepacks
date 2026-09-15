@@ -10,9 +10,10 @@ internal class ResourcePackConfigurationWaiter {
 
     fun begin(playerId: UUID): CompletableFuture<Void> {
         val completion = CompletableFuture<Void>()
-        val previous = synchronized(monitor) {
-            pending.put(playerId, PendingConfiguration(completion))?.completion
-        }
+        val previous =
+            synchronized(monitor) {
+                pending.put(playerId, PendingConfiguration(completion))?.completion
+            }
         previous?.complete(null)
         return completion
     }
@@ -22,40 +23,50 @@ internal class ResourcePackConfigurationWaiter {
     }
 
     fun seal(playerId: UUID) {
-        val completion = synchronized(monitor) {
-            pending[playerId]?.let { configuration ->
-                configuration.sealed = true
-                completeIfResolved(playerId, configuration)
+        val completion =
+            synchronized(monitor) {
+                pending[playerId]?.let { configuration ->
+                    configuration.sealed = true
+                    completeIfResolved(playerId, configuration)
+                }
             }
-        }
         completion?.complete(null)
     }
 
     fun onStatus(playerId: UUID, packId: UUID?, status: PlayerResourcePackStatusEvent.Status) {
         if (packId == null || status.isIntermediate) return
-        val completion = synchronized(monitor) {
-            pending[playerId]?.let { configuration ->
-                configuration.remaining.remove(packId)
-                completeIfResolved(playerId, configuration)
+        val completion =
+            synchronized(monitor) {
+                pending[playerId]?.let { configuration ->
+                    configuration.remaining.remove(packId)
+                    completeIfResolved(playerId, configuration)
+                }
             }
-        }
         completion?.complete(null)
     }
 
-    fun forget(playerId: UUID) { synchronized(monitor) { pending.remove(playerId)?.completion }?.complete(null) }
+    fun forget(playerId: UUID) {
+        synchronized(monitor) { pending.remove(playerId)?.completion }?.complete(null)
+    }
 
     fun seal(playerId: UUID, completion: CompletableFuture<Void>) {
-        val resolved = synchronized(monitor) {
-            if (pending[playerId]?.completion !== completion) null else {
-                pending[playerId]!!.sealed = true
-                completeIfResolved(playerId, pending[playerId]!!)
+        val resolved =
+            synchronized(monitor) {
+                if (pending[playerId]?.completion !== completion) null
+                else {
+                    pending[playerId]!!.sealed = true
+                    completeIfResolved(playerId, pending[playerId]!!)
+                }
             }
-        }
         resolved?.complete(null)
     }
 
     fun forget(playerId: UUID, completion: CompletableFuture<Void>) {
-        synchronized(monitor) { if (pending[playerId]?.completion === completion) pending.remove(playerId)?.completion else null }
+        synchronized(monitor) {
+                if (pending[playerId]?.completion === completion)
+                    pending.remove(playerId)?.completion
+                else null
+            }
             ?.complete(null)
     }
 
@@ -63,15 +74,15 @@ internal class ResourcePackConfigurationWaiter {
         synchronized(monitor) { pending[playerId]?.completion === completion }
 
     fun clear() {
-        val completions = synchronized(monitor) {
-            pending.values.map { it.completion }.also {
-            pending.clear()
-            }
-        }
+        val completions =
+            synchronized(monitor) { pending.values.map { it.completion }.also { pending.clear() } }
         completions.forEach { it.complete(null) }
     }
 
-    private fun completeIfResolved(playerId: UUID, configuration: PendingConfiguration): CompletableFuture<Void>? {
+    private fun completeIfResolved(
+        playerId: UUID,
+        configuration: PendingConfiguration,
+    ): CompletableFuture<Void>? {
         if (!configuration.sealed || configuration.remaining.isNotEmpty()) return null
         pending.remove(playerId, configuration)
         return configuration.completion
