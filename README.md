@@ -26,7 +26,8 @@ The default document seeds the Stable Grounds PackSet only when no operator docu
   "source": {
     "baseUrl": "https://cdn.grounds.gg",
     "packSet": "grounds-global",
-    "channel": "stable"
+    "channel": "stable",
+    "pin": null
   },
   "required": true,
   "prompt": "Grounds benötigt seine Resourcepacks."
@@ -34,13 +35,30 @@ The default document seeds the Stable Grounds PackSet only when no operator docu
 ```
 
 For Stage, an operator changes only `source.channel` to `edge`; the deployment environment and
-PackSet channel are separate choices.
+PackSet channel are separate choices. A missing or `null` `source.pin` follows that channel. A
+release pin overrides the channel while retaining it as the explicit fallback to use when unpinned:
+
+```json
+"source": {
+  "baseUrl": "https://cdn.grounds.gg",
+  "packSet": "grounds-global",
+  "channel": "stable",
+  "pin": { "type": "release", "id": "v0.7.0" }
+}
+```
+
+Only `release` pins with canonical release IDs are accepted. Pin-aware rollout requires every
+target runtime to be verified first; operator mutation remains disabled by default until that gate
+is complete.
 
 ## Runtime boundary
 
 The Velocity runtime reads an immutable in-memory snapshot during player login: login does no
-synchronous configuration-service or CDN I/O. The client performs refreshes on its own scheduler
-and caches validated CDN state under the plugin data directory at `packset-cache` (normally
+synchronous configuration-service or CDN I/O. Stable and Edge channels continue periodic refreshes.
+A release pin validates an initial snapshot and reuses its immutable local cache when offline;
+release pins do not poll periodically. Configuration updates resolve in the background and are
+adopted only at the next safe transition. Validated CDN state is cached under the plugin data
+directory at `packset-cache` (normally
 `plugins/plugin-resourcepacks/packset-cache`).
 
 An arbitrary HTTPS origin is an administrator capability. Until service-config has application-level

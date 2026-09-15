@@ -1,9 +1,14 @@
 package gg.grounds.resourcepacks.velocity
 
 import com.velocitypowered.api.proxy.Player
+import gg.grounds.resourcepacks.client.PackSetClient
+import gg.grounds.resourcepacks.client.PackSetClientConfig
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
+import gg.grounds.resourcepacks.client.PackSetHttpResponse
+import gg.grounds.resourcepacks.client.PackSetHttpTransport
 import gg.grounds.resourcepacks.client.PackSetSnapshot
+import gg.grounds.resourcepacks.client.RefreshResult
 import gg.grounds.resourcepacks.client.ResolvedPack
 import gg.grounds.resourcepacks.contract.ChannelDocument
 import gg.grounds.resourcepacks.contract.ChannelManifestReference
@@ -17,12 +22,17 @@ import gg.grounds.resourcepacks.contract.PackSetManifest
 import gg.grounds.resourcepacks.contract.PublicationType
 import java.lang.reflect.Proxy
 import java.net.URI
+import java.nio.file.Files
+import java.time.Duration
+import java.util.Comparator
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 internal fun settings(
     packSet: String = "global",
     required: Boolean = true,
     prompt: String = "Grounds packs",
+    pin: ResourcePackSourcePinSettings? = null,
 ) =
     ResourcePackSettings(
         source =
@@ -30,6 +40,7 @@ internal fun settings(
                 baseUrl = "https://assets.example.test",
                 packSet = packSet,
                 channel = "stable",
+                pin = pin,
             ),
         required = required,
         prompt = prompt,
@@ -78,6 +89,94 @@ internal fun snapshot(
         ),
         packs,
     )
+}
+
+internal fun releaseSnapshot(
+    settings: ResourcePackSettings,
+    version: String = "1.2.3",
+): PackSetSnapshot {
+    val source = settings.toClientSource()
+    val root = "${source.baseUri}/resourcepacks/packsets/${source.packSet}/releases/v$version"
+    val bytes =
+        """
+        {
+          "catalog": {
+            "coordinate": "gg.grounds:resourcepacks-catalog:$version",
+            "file": "grounds-resourcepack-catalog-v$version.jar",
+            "id": "grounds:resourcepacks",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 3,
+            "version": "$version"
+          },
+          "minecraft": {
+            "resourcePackFormat": 88,
+            "version": "26.2"
+          },
+          "packSet": "${source.packSet}",
+          "packs": [
+            {
+              "id": "grounds-content",
+              "order": 0,
+              "required": true,
+              "resourcePackFormat": 88,
+              "role": "content",
+              "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "size": 4,
+              "url": "$root/grounds-content-pack-v$version.zip",
+              "uuid": "44591d5b-71f5-5c2a-a5b2-d3ee7be47e53"
+            },
+            {
+              "id": "grounds-platform",
+              "order": 1,
+              "required": true,
+              "resourcePackFormat": 88,
+              "role": "platform",
+              "sha1": "dddddddddddddddddddddddddddddddddddddddd",
+              "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "size": 5,
+              "url": "$root/grounds-platform-pack-v$version.zip",
+              "uuid": "8da7cffe-bb04-55e0-9868-7789ce5de362"
+            }
+          ],
+          "provenance": {
+            "commit": "1969c1e6a3799e976de46eab019a16b2ee257ea7",
+            "repository": "groundsgg/resourcepacks"
+          },
+          "publication": {
+            "id": "v$version",
+            "type": "release"
+          },
+          "schemaVersion": 2,
+          "version": "$version"
+        }
+        """
+            .trimIndent()
+            .plus("\n")
+            .encodeToByteArray()
+    val transport =
+        object : PackSetHttpTransport {
+            override fun get(
+                uri: URI,
+                ifNoneMatch: String?,
+                timeout: Duration,
+            ): PackSetHttpResponse {
+                check(uri == source.requestUri && ifNoneMatch == null)
+                return PackSetHttpResponse(200, null, bytes.inputStream())
+            }
+        }
+    val cacheDirectory = Files.createTempDirectory("resourcepacks-release-snapshot-test")
+    try {
+        PackSetClient(PackSetClientConfig(source, cacheDirectory), transport).use { client ->
+            val result = client.refreshNow().toCompletableFuture().get(5, TimeUnit.SECONDS)
+            check(result is RefreshResult.Activated) { "Release fixture did not activate: $result" }
+            return result.snapshot
+        }
+    } finally {
+        Files.walk(cacheDirectory).use { paths ->
+            paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists)
+        }
+    }
 }
 
 internal fun resolvedPack(

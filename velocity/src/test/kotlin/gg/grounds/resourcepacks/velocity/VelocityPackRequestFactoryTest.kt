@@ -120,4 +120,41 @@ class VelocityPackRequestFactoryTest {
         assertNull(factory.fingerprint(newSettings, state))
         assertTrue(oldSnapshot.source != newSettings.toClientSource())
     }
+
+    @Test
+    fun `pinned release request uses canonical publication target and immutable pack fields`() {
+        val settings = settings(pin = ResourcePackSourcePinSettings(id = "v1.2.3"))
+        val snapshot = releaseSnapshot(settings)
+        val state = readyState(settings, snapshot)
+
+        val prepared = factory.prepare(settings, state)!!
+
+        assertEquals("v1.2.3", prepared.targetId)
+        assertEquals(
+            listOf(
+                UUID.fromString("44591d5b-71f5-5c2a-a5b2-d3ee7be47e53"),
+                UUID.fromString("8da7cffe-bb04-55e0-9868-7789ce5de362"),
+            ),
+            prepared.request.packs().map { it.id() },
+        )
+        assertEquals(
+            listOf(
+                URI(
+                    "https://assets.example.test/resourcepacks/packsets/global/releases/v1.2.3/grounds-content-pack-v1.2.3.zip"
+                ),
+                URI(
+                    "https://assets.example.test/resourcepacks/packsets/global/releases/v1.2.3/grounds-platform-pack-v1.2.3.zip"
+                ),
+            ),
+            prepared.request.packs().map { it.uri() },
+        )
+        assertEquals(
+            listOf("b".repeat(40), "d".repeat(40)),
+            prepared.request.packs().map { it.hash() },
+        )
+        assertEquals(prepared.fingerprint, factory.fingerprint(settings, state))
+        assertNull(
+            factory.request(settings(pin = ResourcePackSourcePinSettings(id = "v1.2.4")), state)
+        )
+    }
 }

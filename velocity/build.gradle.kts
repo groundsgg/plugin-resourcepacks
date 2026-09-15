@@ -14,7 +14,7 @@ dependencies {
             )
         }
     }
-    implementation("gg.grounds:resourcepacks-client:0.3.1")
+    implementation("gg.grounds:resourcepacks-client:0.7.0")
 
     testImplementation("gg.grounds:plugin-config-common:1.0.0")
     testImplementation("gg.grounds:plugin-config-velocity:1.0.0") {
