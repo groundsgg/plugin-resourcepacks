@@ -60,10 +60,12 @@ internal class ResourcePackCoordinator(
     fun onLogin(player: Player, session: InitialDeliverySession): InitialPackDelivery =
         synchronized(delivery) {
             if (closed) return@synchronized InitialPackDelivery.WAITING_FOR_SNAPSHOT
+            pendingInitial[player.uniqueId] = PendingInitial(player, session)
+            initiallyCompleted.remove(player.uniqueId)
             val configured = settings()
             currentSettings = configured
             when {
-                configured == null -> waitForSnapshotLocked(player, session)
+                configured == null -> InitialPackDelivery.WAITING_FOR_SNAPSHOT
                 !configured.enabled -> {
                     completeInitialLocked(player.uniqueId, session, notify = false)
                     InitialPackDelivery.NO_REQUEST
@@ -73,7 +75,7 @@ internal class ResourcePackCoordinator(
                         dispatchLocked(player, prepared, isolateSendFailure = false)
                         completeInitialLocked(player.uniqueId, session, notify = false)
                         InitialPackDelivery.SENT
-                    } ?: waitForSnapshotLocked(player, session)
+                    } ?: InitialPackDelivery.WAITING_FOR_SNAPSHOT
             }
         }
 
@@ -185,15 +187,6 @@ internal class ResourcePackCoordinator(
             targetAttributions.clear()
             pendingTargetAttributions.clear()
         }
-
-    private fun waitForSnapshotLocked(
-        player: Player,
-        session: InitialDeliverySession,
-    ): InitialPackDelivery {
-        pendingInitial[player.uniqueId] = PendingInitial(player, session)
-        initiallyCompleted.remove(player.uniqueId)
-        return InitialPackDelivery.WAITING_FOR_SNAPSHOT
-    }
 
     private fun completeInitialLocked(
         playerId: UUID,

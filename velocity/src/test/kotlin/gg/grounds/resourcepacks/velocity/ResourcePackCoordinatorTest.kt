@@ -14,6 +14,41 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ResourcePackCoordinatorTest {
+    @Test
+    fun `failed ready replacement cannot leave predecessor pending for late snapshot`() {
+        val configured = settings()
+        var state = readyState(configured, snapshot(configured)).copy(current = null)
+        val predecessor = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var failNextSend = true
+        val sent = mutableListOf<Player>()
+        val coordinator =
+            ResourcePackCoordinator(
+                settings = { configured },
+                clientState = { state },
+                sender =
+                    PackSender { player, _ ->
+                        if (failNextSend) {
+                            failNextSend = false
+                            error("replacement send failed")
+                        }
+                        sent += player
+                    },
+                requestFactory = VelocityPackRequestFactory(),
+            )
+        assertEquals(InitialPackDelivery.WAITING_FOR_SNAPSHOT, coordinator.onLogin(predecessor))
+        state = readyState(configured, snapshot(configured))
+        val replacementSession = coordinator.newInitialSession()
+        assertFailsWith<IllegalStateException> {
+            coordinator.onLogin(replacement, replacementSession)
+        }
+        coordinator.forget(replacement.uniqueId, replacementSession)
+
+        coordinator.onSnapshot(state)
+
+        assertEquals(emptyList(), sent)
+    }
+
     // Break caught: an unknown operator value must not fall through to a default request.
     @Test
     fun `missing settings sends nothing`() {
