@@ -158,7 +158,7 @@ internal constructor(
 
     @Subscribe
     fun onServerPostConnect(event: ServerPostConnectEvent) {
-        if (!stopped.get()) coordinator.onServerSwitch(event.player)
+        if (!stopped.get() && event.previousServer != null) coordinator.onServerSwitch(event.player)
     }
 
     @Subscribe

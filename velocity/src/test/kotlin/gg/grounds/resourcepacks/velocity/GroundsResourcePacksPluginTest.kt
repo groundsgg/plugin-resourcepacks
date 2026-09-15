@@ -691,7 +691,12 @@ class GroundsResourcePacksPluginTest {
         plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
         gateway.emit(changed)
         client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(samePack))))
-        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        val previous =
+            Proxy.newProxyInstance(
+                com.velocitypowered.api.proxy.server.RegisteredServer::class.java.classLoader,
+                arrayOf(com.velocitypowered.api.proxy.server.RegisteredServer::class.java),
+            ) { _, method, _ -> defaultValue(method.returnType) } as com.velocitypowered.api.proxy.server.RegisteredServer
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previous))
         val listener = events.registered.single().second as ResourcePackStatusListener
 
         listener.onStatus(
