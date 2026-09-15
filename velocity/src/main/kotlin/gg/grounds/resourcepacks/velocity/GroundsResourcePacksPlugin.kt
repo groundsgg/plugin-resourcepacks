@@ -139,10 +139,11 @@ internal constructor(
         val completion = configurationWaiter.begin(playerId)
         val session = coordinator.newInitialSession()
         val initial = InitialDeadline(event.player(), completion, session)
-        synchronized(deadlines) { initialDeadlines[playerId] = initial }
+        val replaced = synchronized(deadlines) { initialDeadlines.put(playerId, initial) }
+        replaced?.handle?.close()
         try {
             when (coordinator.onLogin(event.player(), session)) {
-                InitialPackDelivery.SENT, InitialPackDelivery.NO_REQUEST -> configurationWaiter.seal(playerId)
+                InitialPackDelivery.SENT, InitialPackDelivery.NO_REQUEST -> configurationWaiter.seal(playerId, completion)
                 InitialPackDelivery.WAITING_FOR_SNAPSHOT -> scheduleSnapshotDeadline(initial)
             }
         } catch (failure: Throwable) {
@@ -277,13 +278,18 @@ internal constructor(
     }
 
     private fun completeInitialConfiguration(playerId: java.util.UUID, session: InitialDeliverySession) {
-        val initial = synchronized(deadlines) { initialDeadlines[playerId] }
-        if (initial?.session !== session) return
-        initial.handle?.close()
-        initial.handle = null
-        initial.ready = true
-        configurationWaiter.seal(playerId, initial.completion)
+        val handle = synchronized(deadlines) {
+            initialDeadlines[playerId]?.takeIf { it.session === session }?.let {
+                it.ready = true
+                it.handle.also { captured -> it.handle = null }
+            }
+        } ?: return
+        handle?.close()
+        configurationWaiter.seal(playerId, sessionCompletion(playerId, session) ?: return)
     }
+
+    private fun sessionCompletion(playerId: java.util.UUID, session: InitialDeliverySession): CompletableFuture<Void>? =
+        synchronized(deadlines) { initialDeadlines[playerId]?.takeIf { it.session === session }?.completion }
 
     private fun scheduleSnapshotDeadline(session: InitialDeadline) {
         val handle = snapshotDeadline.schedule { expireInitialDelivery(session.player.uniqueId, session) }
@@ -297,8 +303,11 @@ internal constructor(
     private fun expireInitialDelivery(playerId: java.util.UUID, session: InitialDeadline) {
         if (!coordinator.cancelInitial(playerId, session.session)) return
         synchronized(deadlines) { if (initialDeadlines[playerId] !== session) return; initialDeadlines.remove(playerId) }
-        session.player.disconnect(Component.text("Resource packs are currently unavailable. Please try again."))
-        configurationWaiter.forget(playerId, session.completion)
+        try {
+            session.player.disconnect(Component.text("Resource packs are currently unavailable. Please try again."))
+        } finally {
+            configurationWaiter.forget(playerId, session.completion)
+        }
     }
 
     private fun cancelDeadline(playerId: java.util.UUID) {

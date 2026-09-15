@@ -759,6 +759,33 @@ class GroundsResourcePacksPluginTest {
         assertTrue(log.messages.any { it.contains("settings applied (channel=edge") })
     }
 
+    @Test
+    fun `ready during deadline scheduling cancels snapshot timeout while download remains pending`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<ResourcePackRequest>()
+        val plugin = plugin(gateway, clients, sender = PackSender { _, request -> sent += request }, events = events, deadline = deadline)
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        deadline.onSchedule = { client.emit(readyState(initial, snapshot(initial))) }
+
+        val task = requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+        var resumed = false
+        task.execute(object : Continuation {
+            override fun resume() { resumed = true }
+            override fun resumeWithException(exception: Throwable) { throw exception }
+        })
+        assertEquals(1, sent.size)
+        assertTrue(deadline.entries.single().cancelled)
+        deadline.invoke()
+        assertFalse(resumed)
+        // The deadline is canceled while the terminal-status waiter remains the owner of resume.
+    }
+
     private fun plugin(
         gateway: ResourcePackConfigGateway,
         clients: FakeClientFactory,
@@ -767,6 +794,7 @@ class GroundsResourcePacksPluginTest {
         sender: PackSender = PackSender { _, _ -> },
         events: FakeEventRegistry = FakeEventRegistry(),
         log: FakeResourcePackLog = FakeResourcePackLog(),
+        deadline: ResourcePackSnapshotDeadline = FakeSnapshotDeadline(),
     ) =
         GroundsResourcePacksPlugin(
             dataDirectory = directory,
@@ -776,6 +804,7 @@ class GroundsResourcePacksPluginTest {
             sender = sender,
             eventRegistry = events,
             log = log,
+            snapshotDeadline = deadline,
         )
 
     private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
@@ -788,6 +817,22 @@ class GroundsResourcePacksPluginTest {
             }
             .forEach { method -> method.invoke(plugin, event) }
     }
+}
+
+internal class FakeSnapshotDeadline : ResourcePackSnapshotDeadline {
+    data class Entry(val action: () -> Unit, var cancelled: Boolean = false)
+    val entries = mutableListOf<Entry>()
+    var onSchedule: (() -> Unit)? = null
+    var throwOnSchedule = false
+    override fun schedule(action: () -> Unit): AutoCloseable {
+        if (throwOnSchedule) error("schedule failed")
+        val entry = Entry(action)
+        entries += entry
+        onSchedule?.invoke()
+        return AutoCloseable { entry.cancelled = true }
+    }
+    fun invoke(index: Int = 0) = entries[index].action()
+    override fun close() { entries.forEach { it.cancelled = true } }
 }
 
 internal class FakeResourcePackConfigBackend(
