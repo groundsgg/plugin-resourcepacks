@@ -15,6 +15,32 @@ import kotlin.test.assertTrue
 
 class ResourcePackCoordinatorTest {
     @Test
+    fun `owned snapshot expiry removes prior sent attribution before session is lost`() {
+        val configured = settings()
+        var state = readyState(configured, snapshot(configured))
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var sends = 0
+        val coordinator =
+            ResourcePackCoordinator(
+                { configured },
+                { state },
+                PackSender { _, _ -> sends++ },
+                VelocityPackRequestFactory(),
+            )
+        coordinator.onLogin(online)
+        state = state.copy(current = null)
+        val pending = coordinator.newInitialSession(online)
+        assertEquals(InitialPackDelivery.WAITING_FOR_SNAPSHOT, coordinator.onLogin(online, pending))
+
+        assertTrue(coordinator.cancelInitial(online.uniqueId, pending))
+
+        assertNull(coordinator.targetId(online.uniqueId, resolvedPack().uuid))
+        state = readyState(configured, snapshot(configured))
+        coordinator.onLogin(online)
+        assertEquals(2, sends)
+    }
+
+    @Test
     fun `failed ready replacement cannot leave predecessor pending for late snapshot`() {
         val configured = settings()
         var state = readyState(configured, snapshot(configured)).copy(current = null)
@@ -38,7 +64,7 @@ class ResourcePackCoordinatorTest {
             )
         assertEquals(InitialPackDelivery.WAITING_FOR_SNAPSHOT, coordinator.onLogin(predecessor))
         state = readyState(configured, snapshot(configured))
-        val replacementSession = coordinator.newInitialSession()
+        val replacementSession = coordinator.newInitialSession(replacement)
         assertFailsWith<IllegalStateException> {
             coordinator.onLogin(replacement, replacementSession)
         }
@@ -144,6 +170,7 @@ class ResourcePackCoordinatorTest {
                             prepared.packIds,
                         )
                         expected = true
+                        {}
                     },
             )
 
@@ -390,9 +417,9 @@ class ResourcePackCoordinatorTest {
         assertEquals("v1.0.2", coordinator.targetId(player.uniqueId, packId))
     }
 
-    // Break caught: successful-send attribution can outlive disabled delivery or plugin shutdown.
+    // Break caught: disabling must retain ownership for already-requested terminal statuses.
     @Test
-    fun `target attribution clears when delivery disables and when coordinator closes`() {
+    fun `target attribution survives disabling delivery and clears when coordinator closes`() {
         var settings = settings()
         val state = readyState(settings, snapshot(settings))
         val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -408,40 +435,49 @@ class ResourcePackCoordinatorTest {
 
         settings = settings.copy(enabled = false)
         coordinator.onSettingsChanged(settings)
-        assertNull(coordinator.targetId(player.uniqueId, packId))
+        assertEquals("v1.0.1", coordinator.targetId(player.uniqueId, packId))
 
         settings = settings.copy(enabled = true)
         coordinator.onSettingsChanged(settings)
-        assertNull(coordinator.targetId(player.uniqueId, packId))
+        assertEquals("v1.0.1", coordinator.targetId(player.uniqueId, packId))
         coordinator.clear()
 
         assertNull(coordinator.targetId(player.uniqueId, packId))
     }
 
-    // Break caught: one stale player throwing during snapshot fanout can starve every later online
-    // player and can be incorrectly marked as delivered.
+    // Break caught: one pending player's failure must not starve other pending initial players.
     @Test
-    fun `snapshot fanout isolates a failed player and retries only that player`() {
+    fun `pending snapshot delivery isolates failed send and retries only that player`() {
         val settings = settings()
-        val state = readyState(settings, snapshot(settings))
+        var state = readyState(settings, snapshot(settings)).copy(current = null)
         val failed = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         val healthy = player("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
         val attempts = mutableListOf<UUID>()
+        var failFirst = true
         val coordinator =
             ResourcePackCoordinator(
                 { settings },
                 { state },
                 PackSender { player, _ ->
                     attempts += player.uniqueId
-                    if (player.uniqueId == failed.uniqueId) error("stale player")
+                    if (player.uniqueId == failed.uniqueId && failFirst) {
+                        failFirst = false
+                        error("first pending send failed")
+                    }
                 },
                 VelocityPackRequestFactory(),
             )
-
+        coordinator.onLogin(failed)
+        coordinator.onLogin(healthy)
+        state = readyState(settings, snapshot(settings))
+        coordinator.onSnapshot(state)
+        assertEquals(setOf(failed.uniqueId, healthy.uniqueId), attempts.toSet())
+        assertEquals(2, attempts.size)
         coordinator.onSnapshot(state)
         coordinator.onSnapshot(state)
 
-        assertEquals(emptyList(), attempts)
+        assertEquals(3, attempts.size)
+        assertEquals(failed.uniqueId, attempts.last())
     }
 
     // Break caught: concurrent login/snapshot paths can race and send the same offer twice.

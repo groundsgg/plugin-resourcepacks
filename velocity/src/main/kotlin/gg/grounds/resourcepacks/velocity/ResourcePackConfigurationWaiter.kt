@@ -10,16 +10,31 @@ internal class ResourcePackConfigurationWaiter {
 
     fun begin(playerId: UUID): CompletableFuture<Void> {
         val completion = CompletableFuture<Void>()
-        val previous =
-            synchronized(monitor) {
-                pending.put(playerId, PendingConfiguration(completion))?.completion
-            }
+        val previous = begin(playerId, completion)
         previous?.complete(null)
         return completion
     }
 
-    fun expect(playerId: UUID, packIds: Set<UUID>) {
-        synchronized(monitor) { pending[playerId]?.remaining?.addAll(packIds) }
+    fun begin(playerId: UUID, completion: CompletableFuture<Void>): CompletableFuture<Void>? =
+        synchronized(monitor) {
+            pending.put(playerId, PendingConfiguration(completion))?.completion
+        }
+
+    fun expect(playerId: UUID, packIds: Set<UUID>): () -> Unit {
+        val attempt =
+            synchronized(monitor) {
+                pending[playerId]?.let { configuration ->
+                    val added = packIds - configuration.remaining
+                    configuration.remaining.addAll(added)
+                    configuration to added
+                }
+            } ?: return {}
+        return {
+            synchronized(monitor) {
+                if (pending[playerId] === attempt.first)
+                    attempt.first.remaining.removeAll(attempt.second)
+            }
+        }
     }
 
     fun seal(playerId: UUID) {
@@ -33,14 +48,21 @@ internal class ResourcePackConfigurationWaiter {
         completion?.complete(null)
     }
 
-    fun onStatus(playerId: UUID, packId: UUID?, status: PlayerResourcePackStatusEvent.Status) {
+    fun onStatus(
+        playerId: UUID,
+        packId: UUID?,
+        status: PlayerResourcePackStatusEvent.Status,
+        expectedCompletion: CompletableFuture<Void>? = null,
+    ) {
         if (packId == null || status.isIntermediate) return
         val completion =
             synchronized(monitor) {
-                pending[playerId]?.let { configuration ->
-                    configuration.remaining.remove(packId)
-                    completeIfResolved(playerId, configuration)
-                }
+                pending[playerId]
+                    ?.takeIf { expectedCompletion == null || it.completion === expectedCompletion }
+                    ?.let { configuration ->
+                        configuration.remaining.remove(packId)
+                        completeIfResolved(playerId, configuration)
+                    }
             }
         completion?.complete(null)
     }

@@ -113,7 +113,16 @@ internal constructor(
                 coordinator::ownsPack,
                 coordinator::targetId,
                 log,
-                configurationWaiter::onStatus,
+                { player, packId, status ->
+                    val playerId = player.uniqueId
+                    val initial =
+                        synchronized(deadlines) {
+                            initialDeadlines[playerId]?.takeIf { it.player === player }
+                        }
+                    initial?.let {
+                        configurationWaiter.onStatus(playerId, packId, status, it.completion)
+                    }
+                },
             )
         statusListener = listener
         eventRegistry.register(this, listener)
@@ -140,20 +149,42 @@ internal constructor(
     fun onPlayerConfiguration(event: PlayerConfigurationEvent): EventTask? {
         if (stopped.get()) return null
         val playerId = event.player().uniqueId
-        val completion = configurationWaiter.begin(playerId)
-        val session = coordinator.newInitialSession()
+        val completion = CompletableFuture<Void>()
+        val session = coordinator.newInitialSession(event.player())
         val initial = InitialDeadline(event.player(), completion, session)
-        val replaced = synchronized(deadlines) { initialDeadlines.put(playerId, initial) }
-        replaced?.handle?.close()
+        var previous: CompletableFuture<Void>? = null
+        var replacedHandle: AutoCloseable? = null
+        var registered = false
         try {
-            when (coordinator.onLogin(event.player(), session)) {
+            val delivery =
+                coordinator.onLogin(event.player(), session) {
+                    if (stopped.get()) false
+                    else {
+                        previous = configurationWaiter.begin(playerId, completion)
+                        replacedHandle =
+                            synchronized(deadlines) {
+                                initialDeadlines.put(playerId, initial)?.handle
+                            }
+                        registered = true
+                        true
+                    }
+                }
+            when (delivery) {
                 InitialPackDelivery.SENT,
-                InitialPackDelivery.NO_REQUEST -> configurationWaiter.seal(playerId, completion)
+                InitialPackDelivery.NO_REQUEST ->
+                    if (registered) configurationWaiter.seal(playerId, completion)
+                    else completion.complete(null)
                 InitialPackDelivery.WAITING_FOR_SNAPSHOT -> scheduleSnapshotDeadline(initial)
             }
         } catch (failure: Throwable) {
             forgetInitial(initial)
             throw failure
+        } finally {
+            try {
+                replacedHandle?.close()
+            } finally {
+                previous?.complete(null)
+            }
         }
         return if (completion.isDone) null else EventTask.resumeWhenComplete(completion)
     }
@@ -174,6 +205,7 @@ internal constructor(
             !stopped.get() &&
                 event.previousServer != null &&
                 initial != null &&
+                initial.player === event.player &&
                 initial.completion.isDone
         )
             coordinator.onServerSwitch(event.player, initial.session)
@@ -186,12 +218,12 @@ internal constructor(
         var clientListenerToClose: AutoCloseable? = null
         var statusToUnregister: ResourcePackStatusListener? = null
         var clientToClose: ResourcePackClient? = null
+        coordinator.clear()
         snapshotDeadline.close()
         synchronized(deadlines) {
             initialDeadlines.values.forEach { it.handle?.close() }
             initialDeadlines.clear()
         }
-        coordinator.clear()
         configurationWaiter.clear()
         synchronized(lifecycle) {
             configToClose = configListener

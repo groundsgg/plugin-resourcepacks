@@ -15,14 +15,14 @@ internal enum class InitialPackDelivery {
     NO_REQUEST,
 }
 
-internal class InitialDeliverySession internal constructor()
+internal class InitialDeliverySession internal constructor(val player: Player)
 
 internal fun interface ResourcePackDeliveryObserver {
     fun sent(player: Player, prepared: PreparedPackRequest)
 }
 
 internal fun interface ResourcePackDeliveryExpectation {
-    fun expect(player: Player, prepared: PreparedPackRequest)
+    fun expect(player: Player, prepared: PreparedPackRequest): () -> Unit
 }
 
 internal fun interface InitialPackDeliveryCompletion {
@@ -39,6 +39,7 @@ internal class ResourcePackCoordinator(
         },
     private val deliveryExpectation: ResourcePackDeliveryExpectation =
         ResourcePackDeliveryExpectation { _, _ ->
+            {}
         },
     private val initialDeliveryCompleted: InitialPackDeliveryCompletion =
         InitialPackDeliveryCompletion { _, _ ->
@@ -53,13 +54,21 @@ internal class ResourcePackCoordinator(
     private var currentSettings: ResourcePackSettings? = null
     private var closed = false
 
-    fun newInitialSession() = InitialDeliverySession()
+    fun newInitialSession(player: Player) = InitialDeliverySession(player)
 
-    fun onLogin(player: Player): InitialPackDelivery = onLogin(player, newInitialSession())
+    fun onLogin(player: Player): InitialPackDelivery = onLogin(player, newInitialSession(player))
 
-    fun onLogin(player: Player, session: InitialDeliverySession): InitialPackDelivery =
+    fun onLogin(
+        player: Player,
+        session: InitialDeliverySession,
+        register: () -> Boolean = { true },
+    ): InitialPackDelivery =
         synchronized(delivery) {
-            if (closed) return@synchronized InitialPackDelivery.WAITING_FOR_SNAPSHOT
+            if (closed || session.player !== player || !register())
+                return@synchronized InitialPackDelivery.NO_REQUEST
+            val previous =
+                pendingInitial[player.uniqueId]?.session ?: initiallyCompleted[player.uniqueId]
+            if (previous != null && previous.player !== player) forget(player.uniqueId)
             pendingInitial[player.uniqueId] = PendingInitial(player, session)
             initiallyCompleted.remove(player.uniqueId)
             val configured = settings()
@@ -86,7 +95,13 @@ internal class ResourcePackCoordinator(
         synchronized(delivery) { onServerSwitchLocked(player, session) }
 
     private fun onServerSwitchLocked(player: Player, session: InitialDeliverySession?) {
-        if (closed || session == null || initiallyCompleted[player.uniqueId] !== session) return
+        if (
+            closed ||
+                session == null ||
+                session.player !== player ||
+                initiallyCompleted[player.uniqueId] !== session
+        )
+            return
         val configured = settings() ?: return
         currentSettings = configured
         requestFactory.prepare(configured, clientState())?.let {
@@ -120,7 +135,6 @@ internal class ResourcePackCoordinator(
             if (closed) return@synchronized
             val old = currentSettings
             currentSettings = settings
-            if (old?.enabled == true && !settings.enabled) targetAttributions.clear()
             try {
                 applied = mutation()
                 if (!applied) currentSettings = old
@@ -154,8 +168,7 @@ internal class ResourcePackCoordinator(
         synchronized(delivery) {
             val pending = pendingInitial[playerId] ?: return@synchronized false
             if (pending.session !== session) return@synchronized false
-            pendingInitial.remove(playerId)
-            initiallyCompleted.remove(playerId, session)
+            forget(playerId, session)
             true
         }
 
@@ -217,10 +230,12 @@ internal class ResourcePackCoordinator(
                     }
             }
         pendingTargetAttributions.putAll(provisionalAttributions)
+        var rollback: (() -> Unit)? = null
         try {
-            deliveryExpectation.expect(player, prepared)
+            rollback = deliveryExpectation.expect(player, prepared)
             sender.send(player, prepared.request)
         } catch (failure: Exception) {
+            rollback?.invoke()
             if (isolateSendFailure) return false
             throw failure
         } finally {

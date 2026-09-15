@@ -1047,6 +1047,220 @@ class GroundsResourcePacksPluginTest {
         )
     }
 
+    @Test
+    fun `disable during initial download preserves terminal status and unchanged switch dedupe`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var sends = 0
+        val plugin =
+            plugin(gateway, clients, sender = PackSender { _, _ -> sends++ }, events = events)
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        gateway.emit(initial.copy(enabled = false))
+        terminalStatus(events, online)
+        assertEquals(1, continuation.resumes)
+        gateway.emit(initial)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(1, sends)
+    }
+
+    @Test
+    fun `predecessor continuation nested configuration owns latest waiter delivery and deadline`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val outer = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val latest = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val latestContinuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null)))
+            .execute(
+                object : Continuation {
+                    override fun resume() {
+                        requireNotNull(
+                                plugin.onPlayerConfiguration(PlayerConfigurationEvent(latest, null))
+                            )
+                            .execute(latestContinuation)
+                    }
+
+                    override fun resumeWithException(exception: Throwable) {
+                        throw exception
+                    }
+                }
+            )
+        val outerContinuation = RecordingContinuation()
+        plugin
+            .onPlayerConfiguration(PlayerConfigurationEvent(outer, null))
+            ?.execute(outerContinuation)
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        assertEquals(listOf(latest), sent)
+        assertEquals(0, latestContinuation.resumes)
+        deadline.entries.indices.forEach { deadline.invoke(it) }
+        assertEquals(0, latestContinuation.resumes)
+        terminalStatus(events, latest)
+        assertEquals(1, latestContinuation.resumes)
+        assertTrue(deadline.entries.all { it.cancelled })
+    }
+
+    @Test
+    fun `shutdown between stopped guard and registration does not suspend configuration`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline()
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val lateCallback = clients.created.single().captureListener()
+        var shutdown = false
+        val online =
+            player(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                identified = {
+                    if (!shutdown) {
+                        shutdown = true
+                        plugin.onShutdown(ProxyShutdownEvent())
+                    }
+                },
+            )
+        assertNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+        assertTrue(shutdown)
+        assertEquals(emptyList(), deadline.entries)
+        lateCallback(readyState(initial, snapshot(initial)))
+        assertEquals(emptyList(), sent)
+    }
+
+    @Test
+    fun `failed delayed request rolls back unsent ids before different ready request succeeds`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val retried = resolvedPack(uuid = UUID.fromString("22222222-2222-2222-2222-222222222222"))
+        var attempts = 0
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender =
+                    PackSender { _, _ -> if (++attempts == 1) error("first delayed send failed") },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        assertEquals(1, attempts)
+        assertFalse(deadline.entries.single().cancelled)
+        client.emit(readyState(initial, snapshot(initial, sequence = 2, packs = listOf(retried))))
+        assertEquals(2, attempts)
+        assertTrue(deadline.entries.single().cancelled)
+        assertEquals(0, continuation.resumes)
+        (events.registered.single().second as ResourcePackStatusListener).onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                retried.uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `distinct replacement receives unchanged initial pack after predecessor success`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null))
+        terminalStatus(events, first)
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null)))
+            .execute(continuation)
+        assertEquals(listOf(first, replacement), sent)
+        assertEquals(0, continuation.resumes)
+        terminalStatus(events, first)
+        assertEquals(0, continuation.resumes)
+        terminalStatus(events, replacement)
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `stale backend event cannot borrow replacement fingerprint ownership`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null))
+        terminalStatus(events, first)
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+        terminalStatus(events, replacement)
+        sent.clear()
+        client.emit(readyState(initial, snapshot(initial, sequence = 2)))
+        plugin.onServerPostConnect(ServerPostConnectEvent(first, previousServer()))
+        assertEquals(emptyList(), sent)
+        plugin.onServerPostConnect(ServerPostConnectEvent(replacement, previousServer()))
+        assertEquals(listOf(replacement), sent)
+    }
+
+    private fun previousServer() =
+        Proxy.newProxyInstance(
+            com.velocitypowered.api.proxy.server.RegisteredServer::class.java.classLoader,
+            arrayOf(com.velocitypowered.api.proxy.server.RegisteredServer::class.java),
+        ) { _, method, _ ->
+            defaultValue(method.returnType)
+        } as com.velocitypowered.api.proxy.server.RegisteredServer
+
     private class RecordingContinuation : Continuation {
         var resumes = 0
 
