@@ -5,51 +5,69 @@ import gg.grounds.resourcepacks.client.PackSetClientState
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-fun interface OnlinePlayerView {
-    fun players(): Collection<Player>
-}
-
 fun interface PackSender {
     fun send(player: Player, request: net.kyori.adventure.resource.ResourcePackRequest)
 }
 
-internal fun interface ResourcePackDeliveryObserver {
-    fun sent(player: Player, prepared: PreparedPackRequest)
-}
+internal enum class InitialPackDelivery { SENT, WAITING_FOR_SNAPSHOT, NO_REQUEST }
 
-internal fun interface ResourcePackDeliveryExpectation {
-    fun expect(player: Player, prepared: PreparedPackRequest)
-}
+internal fun interface ResourcePackDeliveryObserver { fun sent(player: Player, prepared: PreparedPackRequest) }
+internal fun interface ResourcePackDeliveryExpectation { fun expect(player: Player, prepared: PreparedPackRequest) }
+internal fun interface InitialPackDeliveryCompletion { fun completed(playerId: UUID) }
 
 internal class ResourcePackCoordinator(
     private val settings: () -> ResourcePackSettings?,
     private val clientState: () -> PackSetClientState,
-    private val players: OnlinePlayerView,
     private val sender: PackSender,
     private val requestFactory: VelocityPackRequestFactory,
-    private val deliveryObserver: ResourcePackDeliveryObserver =
-        ResourcePackDeliveryObserver { _, _ ->
-        },
-    private val deliveryExpectation: ResourcePackDeliveryExpectation =
-        ResourcePackDeliveryExpectation { _, _ ->
-        },
+    private val deliveryObserver: ResourcePackDeliveryObserver = ResourcePackDeliveryObserver { _, _ -> },
+    private val deliveryExpectation: ResourcePackDeliveryExpectation = ResourcePackDeliveryExpectation { _, _ -> },
+    private val initialDeliveryCompleted: InitialPackDeliveryCompletion = InitialPackDeliveryCompletion { },
 ) {
     private val delivery = Any()
     private val sent = ConcurrentHashMap<UUID, String>()
+    private val pendingInitial = HashMap<UUID, Player>()
+    private val initiallyCompleted = HashSet<UUID>()
     private val targetAttributions = LinkedHashMap<PlayerPack, TargetAttribution>(16, 0.75f, true)
     private val pendingTargetAttributions = HashMap<PlayerPack, TargetAttribution>()
     private var currentSettings: ResourcePackSettings? = null
     private var closed = false
 
-    fun onLogin(player: Player) =
-        synchronized(delivery) { dispatchLocked(player, clientState(), isolateSendFailure = false) }
+    fun onLogin(player: Player): InitialPackDelivery = synchronized(delivery) {
+        if (closed) return@synchronized InitialPackDelivery.WAITING_FOR_SNAPSHOT
+        val configured = settings()
+        currentSettings = configured
+        when {
+            configured == null -> waitForSnapshotLocked(player)
+            !configured.enabled -> {
+                completeInitialLocked(player.uniqueId, notify = false)
+                InitialPackDelivery.NO_REQUEST
+            }
+            else -> requestFactory.prepare(configured, clientState())?.let { prepared ->
+                dispatchLocked(player, prepared, isolateSendFailure = false)
+                completeInitialLocked(player.uniqueId, notify = false)
+                InitialPackDelivery.SENT
+            } ?: waitForSnapshotLocked(player)
+        }
+    }
 
-    fun onSnapshot(state: PackSetClientState) {
-        synchronized(delivery) {
-            if (!closed)
-                players.players().forEach { player ->
-                    dispatchLocked(player, state, isolateSendFailure = true)
-                }
+    fun onServerSwitch(player: Player) = synchronized(delivery) {
+        if (closed || player.uniqueId !in initiallyCompleted) return@synchronized
+        val configured = settings() ?: return@synchronized
+        currentSettings = configured
+        requestFactory.prepare(configured, clientState())?.let { dispatchLocked(player, it, isolateSendFailure = true) }
+    }
+
+    fun onSnapshot(state: PackSetClientState) = synchronized(delivery) {
+        if (closed) return@synchronized
+        val configured = settings() ?: return@synchronized
+        currentSettings = configured
+        pendingInitial.values.toList().forEach { player ->
+            if (!configured.enabled) completeInitialLocked(player.uniqueId, notify = true)
+            else requestFactory.prepare(configured, state)?.let { prepared ->
+                if (dispatchLocked(player, prepared, isolateSendFailure = true))
+                    completeInitialLocked(player.uniqueId, notify = true)
+            }
         }
     }
 
@@ -61,14 +79,6 @@ internal class ResourcePackCoordinator(
             if (closed) return@synchronized
             val old = currentSettings
             currentSettings = settings
-            if (
-                old == null ||
-                    old.required != settings.required ||
-                    old.prompt != settings.prompt ||
-                    old.enabled != settings.enabled ||
-                    old.source != settings.source
-            )
-                sent.clear()
             if (old?.enabled == true && !settings.enabled) targetAttributions.clear()
             try {
                 applied = mutation()
@@ -81,105 +91,76 @@ internal class ResourcePackCoordinator(
         if (applied) onSnapshot(clientState())
     }
 
-    fun forget(playerId: UUID) {
-        synchronized(delivery) {
-            sent.remove(playerId)
-            targetAttributions.keys.removeIf { it.playerId == playerId }
-            pendingTargetAttributions.keys.removeIf { it.playerId == playerId }
-        }
+    fun forget(playerId: UUID) = synchronized(delivery) {
+        pendingInitial.remove(playerId)
+        initiallyCompleted.remove(playerId)
+        sent.remove(playerId)
+        targetAttributions.keys.removeIf { it.playerId == playerId }
+        pendingTargetAttributions.keys.removeIf { it.playerId == playerId }
     }
 
-    internal fun targetId(playerId: UUID, packId: UUID?): String? =
-        synchronized(delivery) {
-            packId
-                ?.let {
-                    val key = PlayerPack(playerId, it)
-                    pendingTargetAttributions[key] ?: targetAttributions[key]
-                }
-                ?.let { it as? TargetAttribution.Exact }
-                ?.targetId
-        }
+    internal fun targetId(playerId: UUID, packId: UUID?): String? = synchronized(delivery) {
+        packId?.let { pendingTargetAttributions[PlayerPack(playerId, it)] ?: targetAttributions[PlayerPack(playerId, it)] }
+            ?.let { it as? TargetAttribution.Exact }?.targetId
+    }
 
-    internal fun ownsPack(playerId: UUID, packId: UUID?): Boolean =
-        synchronized(delivery) {
-            if (packId == null) false
-            else {
-                val key = PlayerPack(playerId, packId)
-                pendingTargetAttributions.containsKey(key) || targetAttributions.containsKey(key)
+    internal fun ownsPack(playerId: UUID, packId: UUID?): Boolean = synchronized(delivery) {
+        packId != null && (pendingTargetAttributions.containsKey(PlayerPack(playerId, packId)) ||
+            targetAttributions.containsKey(PlayerPack(playerId, packId)))
+    }
+
+    internal fun clear() = synchronized(delivery) {
+        closed = true
+        currentSettings = null
+        pendingInitial.clear()
+        initiallyCompleted.clear()
+        sent.clear()
+        targetAttributions.clear()
+        pendingTargetAttributions.clear()
+    }
+
+    private fun waitForSnapshotLocked(player: Player): InitialPackDelivery {
+        pendingInitial[player.uniqueId] = player
+        return InitialPackDelivery.WAITING_FOR_SNAPSHOT
+    }
+
+    private fun completeInitialLocked(playerId: UUID, notify: Boolean) {
+        pendingInitial.remove(playerId)
+        initiallyCompleted += playerId
+        if (notify) initialDeliveryCompleted.completed(playerId)
+    }
+
+    private fun dispatchLocked(player: Player, prepared: PreparedPackRequest, isolateSendFailure: Boolean): Boolean {
+        if (sent[player.uniqueId] == prepared.fingerprint) return true
+        val provisionalAttributions = prepared.packIds.associate { packId ->
+            val key = PlayerPack(player.uniqueId, packId)
+            key to when (val previous = targetAttributions[key]) {
+                null -> TargetAttribution.Exact(prepared.targetId)
+                is TargetAttribution.Exact -> if (previous.targetId == prepared.targetId) previous else TargetAttribution.Ambiguous
+                TargetAttribution.Ambiguous -> TargetAttribution.Ambiguous
             }
         }
-
-    internal fun clear() =
-        synchronized(delivery) {
-            closed = true
-            currentSettings = null
-            sent.clear()
-            targetAttributions.clear()
-            pendingTargetAttributions.clear()
+        pendingTargetAttributions.putAll(provisionalAttributions)
+        try {
+            deliveryExpectation.expect(player, prepared)
+            sender.send(player, prepared.request)
+        } catch (failure: Exception) {
+            if (isolateSendFailure) return false
+            throw failure
+        } finally {
+            provisionalAttributions.keys.forEach(pendingTargetAttributions::remove)
         }
-
-    private fun dispatchLocked(
-        player: Player,
-        state: PackSetClientState,
-        isolateSendFailure: Boolean,
-    ) {
-        if (closed) return
-        val configured = settings() ?: return
-        currentSettings = configured
-        val prepared = requestFactory.prepare(configured, state) ?: return
-        sent.compute(player.uniqueId) { _, existing ->
-            if (existing == prepared.fingerprint) existing
-            else {
-                val provisionalAttributions =
-                    prepared.packIds.associate { packId ->
-                        val key = PlayerPack(player.uniqueId, packId)
-                        val previous =
-                            targetAttributions.entries.firstOrNull { it.key == key }?.value
-                        key to
-                            when (previous) {
-                                null -> TargetAttribution.Exact(prepared.targetId)
-                                is TargetAttribution.Exact ->
-                                    if (previous.targetId == prepared.targetId) previous
-                                    else TargetAttribution.Ambiguous
-                                TargetAttribution.Ambiguous -> TargetAttribution.Ambiguous
-                            }
-                    }
-                pendingTargetAttributions.putAll(provisionalAttributions)
-                try {
-                    deliveryExpectation.expect(player, prepared)
-                    sender.send(player, prepared.request)
-                } catch (failure: Exception) {
-                    if (isolateSendFailure) return@compute existing
-                    throw failure
-                } finally {
-                    provisionalAttributions.keys.forEach(pendingTargetAttributions::remove)
-                }
-                targetAttributions.putAll(provisionalAttributions)
-                try {
-                    deliveryObserver.sent(player, prepared)
-                } catch (_: Exception) {
-                    // Diagnostics must not change the delivery result.
-                }
-                while (targetAttributions.size > MAX_STATUS_ATTRIBUTIONS) {
-                    targetAttributions.entries.iterator().run {
-                        next()
-                        remove()
-                    }
-                }
-                prepared.fingerprint
-            }
-        }
+        targetAttributions.putAll(provisionalAttributions)
+        try { deliveryObserver.sent(player, prepared) } catch (_: Exception) { }
+        while (targetAttributions.size > MAX_STATUS_ATTRIBUTIONS) targetAttributions.entries.iterator().run { next(); remove() }
+        sent[player.uniqueId] = prepared.fingerprint
+        return true
     }
 
     private data class PlayerPack(val playerId: UUID, val packId: UUID)
-
     private sealed interface TargetAttribution {
         data class Exact(val targetId: String) : TargetAttribution
-
         data object Ambiguous : TargetAttribution
     }
-
-    private companion object {
-        const val MAX_STATUS_ATTRIBUTIONS = 4_096
-    }
+    private companion object { const val MAX_STATUS_ATTRIBUTIONS = 4_096 }
 }

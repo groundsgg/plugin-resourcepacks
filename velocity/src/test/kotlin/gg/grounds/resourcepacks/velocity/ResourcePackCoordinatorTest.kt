@@ -23,7 +23,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { null },
                 { readyState(fallbackSettings, snapshot(fallbackSettings)) },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> sends += 1 },
                 VelocityPackRequestFactory(),
             )
@@ -51,7 +50,6 @@ class ResourcePackCoordinatorTest {
                     stateReads += 1
                     state
                 },
-                players = OnlinePlayerView { emptyList() },
                 sender = PackSender { player, _ -> sent += player.uniqueId },
                 requestFactory = VelocityPackRequestFactory(),
             )
@@ -76,7 +74,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 VelocityPackRequestFactory(),
                 ResourcePackDeliveryObserver { _, prepared -> observed = prepared },
@@ -103,7 +100,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 settings = { settings },
                 clientState = { state },
-                players = OnlinePlayerView { emptyList() },
                 sender = PackSender { _, _ -> assertTrue(expected) },
                 requestFactory = VelocityPackRequestFactory(),
                 deliveryExpectation =
@@ -123,7 +119,7 @@ class ResourcePackCoordinatorTest {
 
     // Break caught: the same client state notification can otherwise resend an identical offer.
     @Test
-    fun `same fingerprint is suppressed and changed snapshot resends all online players once`() {
+    fun `snapshot changes wait for each players next server switch`() {
         val settings = settings()
         var state = readyState(settings, snapshot(settings, sequence = 1))
         val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -131,16 +127,56 @@ class ResourcePackCoordinatorTest {
         val sent = mutableListOf<Pair<UUID, UUID>>()
         val coordinator = coordinator({ settings }, { state }, listOf(first, second), sent)
 
-        coordinator.onSnapshot(state)
-        coordinator.onSnapshot(state)
+        coordinator.onLogin(first)
+        coordinator.onLogin(second)
         state = readyState(settings, snapshot(settings, sequence = 2))
         coordinator.onSnapshot(state)
-        coordinator.onSnapshot(state)
 
+        assertEquals(
+            listOf(first.uniqueId, second.uniqueId),
+            sent.map { it.first },
+        )
+        coordinator.onServerSwitch(first)
+        coordinator.onServerSwitch(first)
+        assertEquals(
+            listOf(first.uniqueId, second.uniqueId, first.uniqueId),
+            sent.map { it.first },
+        )
+        coordinator.onServerSwitch(second)
         assertEquals(
             listOf(first.uniqueId, second.uniqueId, first.uniqueId, second.uniqueId),
             sent.map { it.first },
         )
+    }
+
+    @Test
+    fun `disabled initial delivery waits until a later server switch after enabling`() {
+        var configured = settings().copy(enabled = false)
+        val state = readyState(configured, snapshot(configured))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Pair<UUID, UUID>>()
+        val coordinator = coordinator({ configured }, { state }, emptyList(), sent)
+
+        assertEquals(InitialPackDelivery.NO_REQUEST, coordinator.onLogin(player))
+        configured = configured.copy(enabled = true)
+        coordinator.onSettingsChanged(configured)
+        assertEquals(0, sent.size)
+        coordinator.onServerSwitch(player)
+
+        assertEquals(1, sent.size)
+    }
+
+    @Test
+    fun `server switch before initial configuration sends nothing`() {
+        val configured = settings()
+        val state = readyState(configured, snapshot(configured))
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Pair<UUID, UUID>>()
+        val coordinator = coordinator({ configured }, { state }, emptyList(), sent)
+
+        coordinator.onServerSwitch(player)
+
+        assertEquals(0, sent.size)
     }
 
     // Break caught: a stale per-player fingerprint surviving disconnect suppresses the next
@@ -174,11 +210,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView {
-                    playerViewEntered.countDown()
-                    releasePlayerView.await(1, TimeUnit.SECONDS)
-                    listOf(player)
-                },
                 PackSender { _, _ -> sends.incrementAndGet() },
                 VelocityPackRequestFactory(),
             )
@@ -187,14 +218,14 @@ class ResourcePackCoordinatorTest {
         val executor = Executors.newFixedThreadPool(2)
         try {
             val snapshot = executor.submit { coordinator.onSnapshot(state) }
-            assertTrue(playerViewEntered.await(1, TimeUnit.SECONDS))
+            assertEquals(false, playerViewEntered.await(1, TimeUnit.SECONDS))
             val forget =
                 executor.submit {
                     coordinator.forget(player.uniqueId)
                     forgetCompleted.countDown()
                 }
 
-            assertEquals(false, forgetCompleted.await(150, TimeUnit.MILLISECONDS))
+            assertEquals(true, forgetCompleted.await(150, TimeUnit.MILLISECONDS))
             releasePlayerView.countDown()
             snapshot.get(1, TimeUnit.SECONDS)
             forget.get(1, TimeUnit.SECONDS)
@@ -204,7 +235,7 @@ class ResourcePackCoordinatorTest {
             executor.shutdownNow()
         }
 
-        assertEquals(3, sends.get())
+        assertEquals(2, sends.get())
     }
 
     // Break caught: recording before the Velocity call returns suppresses retry after send failure.
@@ -218,7 +249,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ ->
                     attempts += 1
                     if (attempts == 1) error("send failed")
@@ -246,7 +276,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { sentPlayer, _ ->
                     ownedDuringSend = coordinator.ownsPack(sentPlayer.uniqueId, packId)
                 },
@@ -270,7 +299,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> throw AssertionError("send failed") },
                 VelocityPackRequestFactory(),
             )
@@ -293,7 +321,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> if (fail) error("send failed") },
                 VelocityPackRequestFactory(),
             )
@@ -320,13 +347,12 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { listOf(player) },
                 PackSender { _, _ -> },
                 VelocityPackRequestFactory(),
             )
         coordinator.onLogin(player)
         state = readyState(settings, snapshot(settings, sequence = 2))
-        coordinator.onSnapshot(state)
+        coordinator.onServerSwitch(player)
         assertNull(coordinator.targetId(player.uniqueId, packId))
 
         coordinator.forget(player.uniqueId)
@@ -346,7 +372,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { listOf(player) },
                 PackSender { _, _ -> },
                 VelocityPackRequestFactory(),
             )
@@ -358,7 +383,7 @@ class ResourcePackCoordinatorTest {
 
         settings = settings.copy(enabled = true)
         coordinator.onSettingsChanged(settings)
-        assertEquals("v1.0.1", coordinator.targetId(player.uniqueId, packId))
+        assertNull(coordinator.targetId(player.uniqueId, packId))
         coordinator.clear()
 
         assertNull(coordinator.targetId(player.uniqueId, packId))
@@ -377,7 +402,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { listOf(failed, healthy) },
                 PackSender { player, _ ->
                     attempts += player.uniqueId
                     if (player.uniqueId == failed.uniqueId) error("stale player")
@@ -388,7 +412,7 @@ class ResourcePackCoordinatorTest {
         coordinator.onSnapshot(state)
         coordinator.onSnapshot(state)
 
-        assertEquals(listOf(failed.uniqueId, healthy.uniqueId, failed.uniqueId), attempts)
+        assertEquals(emptyList(), attempts)
     }
 
     // Break caught: concurrent login/snapshot paths can race and send the same offer twice.
@@ -403,7 +427,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ ->
                     calls.incrementAndGet()
                     bothSenders.countDown()
@@ -445,7 +468,6 @@ class ResourcePackCoordinatorTest {
                     }
                     state
                 },
-                OnlinePlayerView { listOf(player) },
                 PackSender { _, _ -> sent.incrementAndGet() },
                 VelocityPackRequestFactory(),
             )
@@ -470,7 +492,7 @@ class ResourcePackCoordinatorTest {
             executor.shutdownNow()
         }
 
-        assertEquals(0, sent.get())
+        assertEquals(1, sent.get())
     }
 
     // Break caught: prompt/required/enabled changes can leave players with old offer semantics.
@@ -484,7 +506,6 @@ class ResourcePackCoordinatorTest {
             ResourcePackCoordinator(
                 { settings },
                 { state },
-                OnlinePlayerView { listOf(player) },
                 PackSender { _, request ->
                     requests +=
                         request.required() to
@@ -504,7 +525,7 @@ class ResourcePackCoordinatorTest {
         coordinator.onSettingsChanged(settings)
 
         assertEquals(
-            listOf(true to "first", true to "second", false to "second", false to "second"),
+            listOf(true to "first"),
             requests,
         )
     }
@@ -536,7 +557,6 @@ class ResourcePackCoordinatorTest {
         ResourcePackCoordinator(
             settings,
             state,
-            OnlinePlayerView { online },
             PackSender { player, request ->
                 sent += player.uniqueId to request.packs().first().id()
             },

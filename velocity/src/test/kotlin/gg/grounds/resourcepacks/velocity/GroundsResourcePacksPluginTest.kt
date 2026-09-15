@@ -194,7 +194,6 @@ class GroundsResourcePacksPluginTest {
                 },
                 gateway,
                 FakeClientFactory(),
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -229,7 +228,6 @@ class GroundsResourcePacksPluginTest {
                 },
                 gateway,
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 events,
                 FakeResourcePackLog(),
@@ -263,7 +261,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 log,
@@ -300,7 +297,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -330,7 +326,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -414,9 +409,9 @@ class GroundsResourcePacksPluginTest {
         assertEquals(1, clients.created.size)
         assertSame(client, clients.created.single())
         assertEquals(listOf(changedSource.toClientSource()), client.reconfigurations)
-        assertEquals(listOf(true, true, false, false), sent.map { it.required() })
+        assertEquals(listOf(true), sent.map { it.required() })
         assertEquals(
-            listOf("first", "second", "second", "second"),
+            listOf("first"),
             sent.map { (it.prompt() as net.kyori.adventure.text.TextComponent).content() },
         )
     }
@@ -464,7 +459,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 gateway,
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -496,7 +490,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -540,7 +533,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -654,6 +646,7 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(oldPack))))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
         gateway.emit(changed)
         client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(newPack))))
         val listener = events.registered.single().second as ResourcePackStatusListener
@@ -695,8 +688,10 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(samePack))))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
         gateway.emit(changed)
         client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(samePack))))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
         val listener = events.registered.single().second as ResourcePackStatusListener
 
         listener.onStatus(
@@ -772,7 +767,6 @@ class GroundsResourcePacksPluginTest {
             environment = { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
             configGateway = gateway,
             clientFactory = clients,
-            players = OnlinePlayerView { online },
             sender = sender,
             eventRegistry = events,
             log = log,
