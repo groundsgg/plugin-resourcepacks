@@ -2,6 +2,7 @@ package gg.grounds.resourcepacks.velocity
 
 import com.velocitypowered.api.event.Continuation
 import com.velocitypowered.api.event.Subscribe
+import com.velocitypowered.api.event.connection.DisconnectEvent
 import com.velocitypowered.api.event.connection.PostLoginEvent
 import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
 import com.velocitypowered.api.event.player.ServerPostConnectEvent
@@ -194,7 +195,6 @@ class GroundsResourcePacksPluginTest {
                 },
                 gateway,
                 FakeClientFactory(),
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -229,7 +229,6 @@ class GroundsResourcePacksPluginTest {
                 },
                 gateway,
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 events,
                 FakeResourcePackLog(),
@@ -263,7 +262,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 log,
@@ -300,7 +298,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -330,7 +327,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -414,9 +410,9 @@ class GroundsResourcePacksPluginTest {
         assertEquals(1, clients.created.size)
         assertSame(client, clients.created.single())
         assertEquals(listOf(changedSource.toClientSource()), client.reconfigurations)
-        assertEquals(listOf(true, true, false, false), sent.map { it.required() })
+        assertEquals(listOf(true), sent.map { it.required() })
         assertEquals(
-            listOf("first", "second", "second", "second"),
+            listOf("first"),
             sent.map { (it.prompt() as net.kyori.adventure.text.TextComponent).content() },
         )
     }
@@ -464,7 +460,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 gateway,
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -496,7 +491,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -540,7 +534,6 @@ class GroundsResourcePacksPluginTest {
                 { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
                 VelocityResourcePackConfigGateway(backend),
                 clients,
-                OnlinePlayerView { emptyList() },
                 PackSender { _, _ -> },
                 FakeEventRegistry(),
                 FakeResourcePackLog(),
@@ -654,10 +647,10 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(oldPack))))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        val listener = events.registered.single().second as ResourcePackStatusListener
         gateway.emit(changed)
         client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(newPack))))
-        val listener = events.registered.single().second as ResourcePackStatusListener
-
         listener.onStatus(
             PlayerResourcePackStatusEvent(
                 online,
@@ -695,10 +688,26 @@ class GroundsResourcePacksPluginTest {
         plugin.onInitialize(ProxyInitializeEvent())
         val client = clients.created.single()
         client.emit(readyState(initial, snapshot(initial, sequence = 1, packs = listOf(samePack))))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        val listener = events.registered.single().second as ResourcePackStatusListener
+        listener.onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                samePack.uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
         gateway.emit(changed)
         client.emit(readyState(changed, snapshot(changed, sequence = 2, packs = listOf(samePack))))
-        val listener = events.registered.single().second as ResourcePackStatusListener
-
+        val previous =
+            Proxy.newProxyInstance(
+                com.velocitypowered.api.proxy.server.RegisteredServer::class.java.classLoader,
+                arrayOf(com.velocitypowered.api.proxy.server.RegisteredServer::class.java),
+            ) { _, method, _ ->
+                defaultValue(method.returnType)
+            } as com.velocitypowered.api.proxy.server.RegisteredServer
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previous))
         listener.onStatus(
             PlayerResourcePackStatusEvent(
                 online,
@@ -758,6 +767,512 @@ class GroundsResourcePacksPluginTest {
         assertTrue(log.messages.any { it.contains("settings applied (channel=edge") })
     }
 
+    @Test
+    fun `ready during deadline scheduling cancels snapshot timeout while download remains pending`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        var disconnects = 0
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
+        val sent = mutableListOf<ResourcePackRequest>()
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                sender = PackSender { _, request -> sent += request },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        deadline.onSchedule = { client.emit(readyState(initial, snapshot(initial))) }
+
+        val task =
+            requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+        var resumed = false
+        task.execute(
+            object : Continuation {
+                override fun resume() {
+                    resumed = true
+                }
+
+                override fun resumeWithException(exception: Throwable) {
+                    throw exception
+                }
+            }
+        )
+        assertEquals(1, sent.size)
+        assertTrue(deadline.entries.single().cancelled)
+        deadline.invoke()
+        assertFalse(resumed)
+        assertEquals(0, disconnects)
+        terminalStatus(events, online)
+        assertTrue(resumed)
+        // The deadline is canceled while the terminal-status waiter remains the owner of resume.
+    }
+
+    @Test
+    fun `snapshot expiry disconnects and releases configuration without late ready delivery`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline()
+        var disconnects = 0
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        assertEquals(0, continuation.resumes)
+        assertEquals(emptyList(), sent)
+
+        deadline.invoke()
+        assertEquals(1, disconnects)
+        assertEquals(1, continuation.resumes)
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        deadline.invoke()
+        assertEquals(emptyList(), sent)
+        assertEquals(1, disconnects)
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `disconnect and shutdown cancel pending snapshot and ignore late ready`() {
+        for (shutdown in listOf(false, true)) {
+            val initial = settings()
+            val clients = FakeClientFactory()
+            val deadline = FakeSnapshotDeadline()
+            var disconnects = 0
+            val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
+            val sent = mutableListOf<Player>()
+            val plugin =
+                plugin(
+                    FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                    clients,
+                    sender = PackSender { player, _ -> sent += player },
+                    deadline = deadline,
+                )
+            plugin.onInitialize(ProxyInitializeEvent())
+            val client = clients.created.single()
+            val lateCallback = client.captureListener()
+            val continuation = RecordingContinuation()
+            requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+                .execute(continuation)
+            assertEquals(0, continuation.resumes)
+
+            if (shutdown) plugin.onShutdown(ProxyShutdownEvent())
+            else
+                plugin.onDisconnect(
+                    DisconnectEvent(online, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN)
+                )
+            assertTrue(deadline.entries.single().cancelled)
+            assertEquals(1, continuation.resumes)
+            lateCallback(readyState(initial, snapshot(initial)))
+            deadline.invoke()
+            assertEquals(emptyList(), sent)
+            assertEquals(0, disconnects)
+            assertEquals(1, continuation.resumes)
+        }
+    }
+
+    @Test
+    fun `replacement configuration survives canceled old timer and old player disconnect`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline()
+        val events = FakeEventRegistry()
+        var disconnects = 0
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val oldContinuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null)))
+            .execute(oldContinuation)
+        val replacementContinuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null)))
+            .execute(replacementContinuation)
+        assertEquals(1, oldContinuation.resumes)
+        assertTrue(deadline.entries[0].cancelled)
+
+        deadline.invoke(0)
+        plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        assertEquals(0, disconnects)
+        assertEquals(0, replacementContinuation.resumes)
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        assertEquals(listOf(replacement), sent)
+        assertTrue(deadline.entries[1].cancelled)
+        deadline.invoke(1)
+        assertEquals(0, replacementContinuation.resumes)
+        assertEquals(0, disconnects)
+        terminalStatus(events, replacement)
+        assertEquals(1, replacementContinuation.resumes)
+    }
+
+    @Test
+    fun `throwing snapshot scheduler cleans configuration before late ready`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline().apply { throwOnSchedule = true }
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+
+        assertFailsWith<IllegalStateException> {
+            plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        }
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        assertEquals(emptyList(), sent)
+        deadline.throwOnSchedule = false
+        val eventsTask = plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        assertEquals(listOf(online), sent)
+        assertTrue(eventsTask != null)
+    }
+
+    @Test
+    fun `old scheduler exception cannot clear replacement configuration`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline()
+        val events = FakeEventRegistry()
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val continuation = RecordingContinuation()
+        deadline.onSchedule = {
+            deadline.onSchedule = null
+            requireNotNull(
+                    plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+                )
+                .execute(continuation)
+            error("old schedule failed after replacement")
+        }
+        assertFailsWith<IllegalStateException> {
+            plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null))
+        }
+        assertFalse(deadline.entries[1].cancelled)
+        assertEquals(0, continuation.resumes)
+        deadline.invoke(0)
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        assertEquals(listOf(replacement), sent)
+        terminalStatus(events, replacement)
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `backend switches wait for terminal initial status then activate changed ready once`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<ResourcePackRequest>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { _, request -> sent += request },
+                events = events,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        val previous =
+            Proxy.newProxyInstance(
+                com.velocitypowered.api.proxy.server.RegisteredServer::class.java.classLoader,
+                arrayOf(com.velocitypowered.api.proxy.server.RegisteredServer::class.java),
+            ) { _, method, _ ->
+                defaultValue(method.returnType)
+            } as com.velocitypowered.api.proxy.server.RegisteredServer
+        client.emit(readyState(initial, snapshot(initial, sequence = 2)))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previous))
+        assertEquals(1, sent.size)
+        assertEquals(0, continuation.resumes)
+        terminalStatus(events, online)
+        assertEquals(1, continuation.resumes)
+        client.emit(readyState(initial, snapshot(initial, sequence = 3)))
+        assertEquals(1, sent.size)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        assertEquals(1, sent.size)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previous))
+        assertEquals(2, sent.size)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previous))
+        assertEquals(2, sent.size)
+        assertEquals(1, continuation.resumes)
+    }
+
+    private fun terminalStatus(events: FakeEventRegistry, player: Player) {
+        (events.registered.single().second as ResourcePackStatusListener).onStatus(
+            PlayerResourcePackStatusEvent(
+                player,
+                resolvedPack().uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
+    }
+
+    @Test
+    fun `disable during initial download preserves terminal status and unchanged switch dedupe`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var sends = 0
+        val plugin =
+            plugin(gateway, clients, sender = PackSender { _, _ -> sends++ }, events = events)
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        gateway.emit(initial.copy(enabled = false))
+        terminalStatus(events, online)
+        assertEquals(1, continuation.resumes)
+        gateway.emit(initial)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(1, sends)
+    }
+
+    @Test
+    fun `predecessor continuation nested configuration owns latest waiter delivery and deadline`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val outer = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val latest = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val latestContinuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null)))
+            .execute(
+                object : Continuation {
+                    override fun resume() {
+                        requireNotNull(
+                                plugin.onPlayerConfiguration(PlayerConfigurationEvent(latest, null))
+                            )
+                            .execute(latestContinuation)
+                    }
+
+                    override fun resumeWithException(exception: Throwable) {
+                        throw exception
+                    }
+                }
+            )
+        val outerContinuation = RecordingContinuation()
+        plugin
+            .onPlayerConfiguration(PlayerConfigurationEvent(outer, null))
+            ?.execute(outerContinuation)
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        assertEquals(listOf(latest), sent)
+        assertEquals(0, latestContinuation.resumes)
+        deadline.entries.indices.forEach { deadline.invoke(it) }
+        assertEquals(0, latestContinuation.resumes)
+        terminalStatus(events, latest)
+        assertEquals(1, latestContinuation.resumes)
+        assertTrue(deadline.entries.all { it.cancelled })
+    }
+
+    @Test
+    fun `shutdown between stopped guard and registration does not suspend configuration`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val deadline = FakeSnapshotDeadline()
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val lateCallback = clients.created.single().captureListener()
+        var shutdown = false
+        val online =
+            player(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                identified = {
+                    if (!shutdown) {
+                        shutdown = true
+                        plugin.onShutdown(ProxyShutdownEvent())
+                    }
+                },
+            )
+        assertNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+        assertTrue(shutdown)
+        assertEquals(emptyList(), deadline.entries)
+        lateCallback(readyState(initial, snapshot(initial)))
+        assertEquals(emptyList(), sent)
+    }
+
+    @Test
+    fun `failed delayed request rolls back unsent ids before different ready request succeeds`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val retried = resolvedPack(uuid = UUID.fromString("22222222-2222-2222-2222-222222222222"))
+        var attempts = 0
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender =
+                    PackSender { _, _ -> if (++attempts == 1) error("first delayed send failed") },
+                events = events,
+                deadline = deadline,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null)))
+            .execute(continuation)
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        assertEquals(1, attempts)
+        assertFalse(deadline.entries.single().cancelled)
+        client.emit(readyState(initial, snapshot(initial, sequence = 2, packs = listOf(retried))))
+        assertEquals(2, attempts)
+        assertTrue(deadline.entries.single().cancelled)
+        assertEquals(0, continuation.resumes)
+        (events.registered.single().second as ResourcePackStatusListener).onStatus(
+            PlayerResourcePackStatusEvent(
+                online,
+                retried.uuid,
+                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
+                null,
+            )
+        )
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `distinct replacement receives unchanged initial pack after predecessor success`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null))
+        terminalStatus(events, first)
+        val continuation = RecordingContinuation()
+        requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null)))
+            .execute(continuation)
+        assertEquals(listOf(first, replacement), sent)
+        assertEquals(0, continuation.resumes)
+        terminalStatus(events, first)
+        assertEquals(0, continuation.resumes)
+        terminalStatus(events, replacement)
+        assertEquals(1, continuation.resumes)
+    }
+
+    @Test
+    fun `stale backend event cannot borrow replacement fingerprint ownership`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val first = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<Player>()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                sender = PackSender { player, _ -> sent += player },
+                events = events,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(first, null))
+        terminalStatus(events, first)
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+        terminalStatus(events, replacement)
+        sent.clear()
+        client.emit(readyState(initial, snapshot(initial, sequence = 2)))
+        plugin.onServerPostConnect(ServerPostConnectEvent(first, previousServer()))
+        assertEquals(emptyList(), sent)
+        plugin.onServerPostConnect(ServerPostConnectEvent(replacement, previousServer()))
+        assertEquals(listOf(replacement), sent)
+    }
+
+    private fun previousServer() =
+        Proxy.newProxyInstance(
+            com.velocitypowered.api.proxy.server.RegisteredServer::class.java.classLoader,
+            arrayOf(com.velocitypowered.api.proxy.server.RegisteredServer::class.java),
+        ) { _, method, _ ->
+            defaultValue(method.returnType)
+        } as com.velocitypowered.api.proxy.server.RegisteredServer
+
+    private class RecordingContinuation : Continuation {
+        var resumes = 0
+
+        override fun resume() {
+            resumes++
+        }
+
+        override fun resumeWithException(exception: Throwable) {
+            throw exception
+        }
+    }
+
     private fun plugin(
         gateway: ResourcePackConfigGateway,
         clients: FakeClientFactory,
@@ -766,16 +1281,17 @@ class GroundsResourcePacksPluginTest {
         sender: PackSender = PackSender { _, _ -> },
         events: FakeEventRegistry = FakeEventRegistry(),
         log: FakeResourcePackLog = FakeResourcePackLog(),
+        deadline: ResourcePackSnapshotDeadline = FakeSnapshotDeadline(),
     ) =
         GroundsResourcePacksPlugin(
             dataDirectory = directory,
             environment = { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
             configGateway = gateway,
             clientFactory = clients,
-            players = OnlinePlayerView { online },
             sender = sender,
             eventRegistry = events,
             log = log,
+            snapshotDeadline = deadline,
         )
 
     private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
@@ -787,6 +1303,28 @@ class GroundsResourcePacksPluginTest {
                     method.parameterTypes.contentEquals(arrayOf(event.javaClass))
             }
             .forEach { method -> method.invoke(plugin, event) }
+    }
+}
+
+internal class FakeSnapshotDeadline : ResourcePackSnapshotDeadline {
+    data class Entry(val action: () -> Unit, var cancelled: Boolean = false)
+
+    val entries = mutableListOf<Entry>()
+    var onSchedule: (() -> Unit)? = null
+    var throwOnSchedule = false
+
+    override fun schedule(action: () -> Unit): AutoCloseable {
+        if (throwOnSchedule) error("schedule failed")
+        val entry = Entry(action)
+        entries += entry
+        onSchedule?.invoke()
+        return AutoCloseable { entry.cancelled = true }
+    }
+
+    fun invoke(index: Int = 0) = entries[index].action()
+
+    override fun close() {
+        entries.forEach { it.cancelled = true }
     }
 }
 
@@ -976,6 +1514,8 @@ internal class FakeResourcePackClient(source: PackSetSource) : ResourcePackClien
         currentState = state
         listener?.invoke(state)
     }
+
+    fun captureListener(): (PackSetClientState) -> Unit = requireNotNull(listener)
 }
 
 internal class FakeEventRegistry : ResourcePackEventRegistry {

@@ -110,14 +110,25 @@ internal fun degradedState(settings: ResourcePackSettings, fallback: PackSetSnap
         "offline",
     )
 
-internal fun player(uuid: String): Player {
+internal fun player(
+    uuid: String,
+    identified: () -> Unit = {},
+    disconnected: () -> Unit = {},
+): Player {
     val id = UUID.fromString(uuid)
     return Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) {
         proxy,
         method,
         args ->
         when (method.name) {
-            "getUniqueId" -> id
+            "getUniqueId" -> {
+                identified()
+                id
+            }
+            "disconnect" -> {
+                disconnected()
+                null
+            }
             "identity" -> net.kyori.adventure.identity.Identity.identity(id)
             "equals" -> proxy === args?.singleOrNull()
             "hashCode" -> id.hashCode()

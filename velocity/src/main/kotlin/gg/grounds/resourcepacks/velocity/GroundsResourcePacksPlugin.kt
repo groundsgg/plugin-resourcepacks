@@ -4,6 +4,7 @@ import com.google.inject.Inject
 import com.velocitypowered.api.event.EventTask
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
+import com.velocitypowered.api.event.player.ServerPostConnectEvent
 import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
@@ -18,8 +19,10 @@ import gg.grounds.resourcepacks.client.PackSetClientStatus
 import java.net.URISyntaxException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import net.kyori.adventure.text.Component
 import org.slf4j.Logger
 
 @Plugin(
@@ -37,10 +40,11 @@ internal constructor(
     private val environment: () -> Map<String, String>,
     private val configGateway: ResourcePackConfigGateway,
     private val clientFactory: ResourcePackClientFactory,
-    players: OnlinePlayerView,
     sender: PackSender,
     private val eventRegistry: ResourcePackEventRegistry,
     private val log: ResourcePackLog,
+    private val snapshotDeadline: ResourcePackSnapshotDeadline =
+        ScheduledResourcePackSnapshotDeadline(),
 ) {
     @Inject
     constructor(
@@ -52,7 +56,6 @@ internal constructor(
         { System.getenv() },
         VelocityResourcePackConfigGateway(proxy),
         DefaultResourcePackClientFactory,
-        OnlinePlayerView { proxy.allPlayers },
         VelocityPlayerPackSender,
         VelocityResourcePackEventRegistry(proxy),
         Slf4jResourcePackLog(logger),
@@ -66,26 +69,31 @@ internal constructor(
     private val state = AtomicReference(closedState())
     private val lastLoggedStatus = AtomicReference<PackSetClientStatus?>(null)
     private val configurationWaiter = ResourcePackConfigurationWaiter()
+    private val deadlines = Any()
+    private val initialDeadlines = HashMap<java.util.UUID, InitialDeadline>()
     private val coordinator =
         ResourcePackCoordinator(
-            configured::get,
-            state::get,
-            players,
-            PackSender { player, request ->
-                sender.send(player, request)
-                metrics.requested()
-            },
-            VelocityPackRequestFactory(),
-            ResourcePackDeliveryObserver { player, prepared ->
-                log.info(
-                    "Resource-pack request sent (playerId=${player.uniqueId}, " +
-                        "targetId=${prepared.targetId}, fingerprint=${prepared.fingerprint}, " +
-                        "packCount=${prepared.packIds.size})"
-                )
-            },
-            ResourcePackDeliveryExpectation { player, prepared ->
-                configurationWaiter.expect(player.uniqueId, prepared.packIds)
-            },
+            settings = configured::get,
+            clientState = state::get,
+            sender =
+                PackSender { player, request ->
+                    sender.send(player, request)
+                    metrics.requested()
+                },
+            requestFactory = VelocityPackRequestFactory(),
+            deliveryObserver =
+                ResourcePackDeliveryObserver { player, prepared ->
+                    log.info(
+                        "Resource-pack request sent (playerId=${player.uniqueId}, " +
+                            "targetId=${prepared.targetId}, fingerprint=${prepared.fingerprint}, " +
+                            "packCount=${prepared.packIds.size})"
+                    )
+                },
+            deliveryExpectation =
+                ResourcePackDeliveryExpectation { player, prepared ->
+                    configurationWaiter.expect(player.uniqueId, prepared.packIds)
+                },
+            initialDeliveryCompleted = InitialPackDeliveryCompletion(::completeInitialConfiguration),
         )
 
     private var client: ResourcePackClient? = null
@@ -105,7 +113,16 @@ internal constructor(
                 coordinator::ownsPack,
                 coordinator::targetId,
                 log,
-                configurationWaiter::onStatus,
+                { player, packId, status ->
+                    val playerId = player.uniqueId
+                    val initial =
+                        synchronized(deadlines) {
+                            initialDeadlines[playerId]?.takeIf { it.player === player }
+                        }
+                    initial?.let {
+                        configurationWaiter.onStatus(playerId, packId, status, it.completion)
+                    }
+                },
             )
         statusListener = listener
         eventRegistry.register(this, listener)
@@ -132,21 +149,66 @@ internal constructor(
     fun onPlayerConfiguration(event: PlayerConfigurationEvent): EventTask? {
         if (stopped.get()) return null
         val playerId = event.player().uniqueId
-        val completion = configurationWaiter.begin(playerId)
+        val completion = CompletableFuture<Void>()
+        val session = coordinator.newInitialSession(event.player())
+        val initial = InitialDeadline(event.player(), completion, session)
+        var previous: CompletableFuture<Void>? = null
+        var replacedHandle: AutoCloseable? = null
+        var registered = false
         try {
-            coordinator.onLogin(event.player())
-            configurationWaiter.seal(playerId)
+            val delivery =
+                coordinator.onLogin(event.player(), session) {
+                    if (stopped.get()) false
+                    else {
+                        previous = configurationWaiter.begin(playerId, completion)
+                        replacedHandle =
+                            synchronized(deadlines) {
+                                initialDeadlines.put(playerId, initial)?.handle
+                            }
+                        registered = true
+                        true
+                    }
+                }
+            when (delivery) {
+                InitialPackDelivery.SENT,
+                InitialPackDelivery.NO_REQUEST ->
+                    if (registered) configurationWaiter.seal(playerId, completion)
+                    else completion.complete(null)
+                InitialPackDelivery.WAITING_FOR_SNAPSHOT -> scheduleSnapshotDeadline(initial)
+            }
         } catch (failure: Throwable) {
-            configurationWaiter.forget(playerId)
+            forgetInitial(initial)
             throw failure
+        } finally {
+            try {
+                replacedHandle?.close()
+            } finally {
+                previous?.complete(null)
+            }
         }
         return if (completion.isDone) null else EventTask.resumeWhenComplete(completion)
     }
 
     @Subscribe
     fun onDisconnect(event: DisconnectEvent) {
-        configurationWaiter.forget(event.player.uniqueId)
-        coordinator.forget(event.player.uniqueId)
+        val initial =
+            synchronized(deadlines) {
+                initialDeadlines[event.player.uniqueId]?.takeIf { it.player === event.player }
+            } ?: return
+        forgetInitial(initial)
+    }
+
+    @Subscribe
+    fun onServerPostConnect(event: ServerPostConnectEvent) {
+        val initial = synchronized(deadlines) { initialDeadlines[event.player.uniqueId] }
+        if (
+            !stopped.get() &&
+                event.previousServer != null &&
+                initial != null &&
+                initial.player === event.player &&
+                initial.completion.isDone
+        )
+            coordinator.onServerSwitch(event.player, initial.session)
     }
 
     @Subscribe
@@ -157,6 +219,11 @@ internal constructor(
         var statusToUnregister: ResourcePackStatusListener? = null
         var clientToClose: ResourcePackClient? = null
         coordinator.clear()
+        snapshotDeadline.close()
+        synchronized(deadlines) {
+            initialDeadlines.values.forEach { it.handle?.close() }
+            initialDeadlines.clear()
+        }
         configurationWaiter.clear()
         synchronized(lifecycle) {
             configToClose = configListener
@@ -253,6 +320,73 @@ internal constructor(
             )
         }
         if (!stopped.get()) coordinator.onSnapshot(next)
+    }
+
+    private fun completeInitialConfiguration(
+        playerId: java.util.UUID,
+        session: InitialDeliverySession,
+    ) {
+        val initial =
+            synchronized(deadlines) {
+                initialDeadlines[playerId]
+                    ?.takeIf { it.session === session }
+                    ?.also { it.ready = true }
+            } ?: return
+        val handle = synchronized(deadlines) { initial.handle.also { initial.handle = null } }
+        handle?.close()
+        configurationWaiter.seal(playerId, initial.completion)
+    }
+
+    private fun scheduleSnapshotDeadline(session: InitialDeadline) {
+        val handle =
+            snapshotDeadline.schedule { expireInitialDelivery(session.player.uniqueId, session) }
+        synchronized(deadlines) {
+            if (
+                initialDeadlines[session.player.uniqueId] === session &&
+                    !session.ready &&
+                    !stopped.get() &&
+                    configurationWaiter.isPending(session.player.uniqueId, session.completion)
+            )
+                session.handle = handle
+            else handle.close()
+        }
+    }
+
+    private fun expireInitialDelivery(playerId: java.util.UUID, session: InitialDeadline) {
+        if (!coordinator.cancelInitial(playerId, session.session)) return
+        synchronized(deadlines) {
+            if (initialDeadlines[playerId] !== session) return
+            initialDeadlines.remove(playerId)
+        }
+        try {
+            session.player.disconnect(
+                Component.text("Resource packs are currently unavailable. Please try again.")
+            )
+        } finally {
+            configurationWaiter.forget(playerId, session.completion)
+        }
+    }
+
+    private fun forgetInitial(initial: InitialDeadline) {
+        val playerId = initial.player.uniqueId
+        coordinator.forget(playerId, initial.session)
+        val handle =
+            synchronized(deadlines) {
+                if (initialDeadlines[playerId] === initial)
+                    initialDeadlines.remove(playerId)?.handle
+                else null
+            }
+        handle?.close()
+        configurationWaiter.forget(playerId, initial.completion)
+    }
+
+    private class InitialDeadline(
+        val player: com.velocitypowered.api.proxy.Player,
+        val completion: CompletableFuture<Void>,
+        val session: InitialDeliverySession,
+    ) {
+        var handle: AutoCloseable? = null
+        var ready = false
     }
 
     private companion object {
