@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.10...v0.1.11) (2026-09-15)
+
+
+### Bug Fixes
+
+* apply changed resource packs at server transitions ([#25](https://github.com/groundsgg/plugin-resourcepacks/issues/25)) ([423bde6](https://github.com/groundsgg/plugin-resourcepacks/commit/423bde6f16ec48e3d74609cb50c8295b9cab7e14))
+
 ## [0.1.10](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.9...v0.1.10) (2026-09-06)
 
 
