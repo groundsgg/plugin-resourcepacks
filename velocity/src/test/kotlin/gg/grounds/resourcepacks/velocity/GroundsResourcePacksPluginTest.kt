@@ -446,6 +446,66 @@ class GroundsResourcePacksPluginTest {
         )
     }
 
+    @Test
+    fun `release pins reconfigure without broadcast and send only on genuine server switches`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val log = FakeResourcePackLog()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sent = mutableListOf<ResourcePackRequest>()
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                sender = PackSender { _, request -> sent += request },
+                events = events,
+                log = log,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(readyState(initial, snapshot(initial)))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        terminalStatus(events, online)
+        sent.clear()
+
+        val firstPin = settings(pin = ResourcePackSourcePinSettings(id = "v1.2.3"))
+        gateway.emit(firstPin)
+        client.emit(readyState(firstPin, releaseSnapshot(firstPin)))
+        assertEquals(listOf(firstPin.toClientSource()), client.reconfigurations)
+        assertEquals(emptyList(), sent)
+
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(1, sent.size)
+        assertTrue(log.messages.any { it.contains("source=release:v1.2.3") })
+
+        val secondPin = settings(pin = ResourcePackSourcePinSettings(id = "v1.2.4"))
+        gateway.emit(secondPin)
+        client.emit(readyState(secondPin, releaseSnapshot(secondPin, "1.2.4")))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(2, sent.size)
+
+        val unpinned = settings().copy(source = settings().source.copy(channel = "edge"))
+        gateway.emit(unpinned)
+        client.emit(readyState(unpinned, snapshot(unpinned)))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(3, sent.size)
+
+        gateway.emit(settings(pin = ResourcePackSourcePinSettings(id = "not-a-release")))
+        assertEquals(
+            listOf(
+                firstPin.toClientSource(),
+                secondPin.toClientSource(),
+                unpinned.toClientSource(),
+            ),
+            client.reconfigurations,
+        )
+        assertTrue(log.messages.last().contains("reason=invalid_settings"))
+        assertFalse(log.messages.last().contains("not-a-release"))
+    }
+
     // Break caught: a delayed callback carrying an old payload can reconfigure the client back to
     // an obsolete source after a newer manager value is already current.
     @Test
@@ -750,7 +810,7 @@ class GroundsResourcePacksPluginTest {
         val transitions = log.messages.filter { it.contains("client transition") }
         assertEquals(2, transitions.size)
         assertTrue(transitions.first().contains(first.fingerprint))
-        assertTrue(transitions.first().contains("sourceChannel=stable"))
+        assertTrue(transitions.first().contains("source=channel:stable"))
         assertTrue(transitions.last().contains(second.fingerprint))
     }
 
@@ -764,7 +824,7 @@ class GroundsResourcePacksPluginTest {
 
         plugin.onInitialize(ProxyInitializeEvent())
 
-        assertTrue(log.messages.any { it.contains("settings applied (channel=edge") })
+        assertTrue(log.messages.any { it.contains("settings applied (source=channel:edge") })
     }
 
     @Test

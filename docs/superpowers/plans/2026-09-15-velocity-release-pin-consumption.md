@@ -34,7 +34,7 @@
 - Modify `velocity/src/test/kotlin/gg/grounds/resourcepacks/velocity/ResourcePackTestFixtures.kt`: one resolver-backed release snapshot helper; existing channel fixture stays channel-only.
 - Modify `README.md`: nullable pin, override/unpin behavior, immutable cache/no polling, rollout gate.
 
-**Interfaces:** Consumes published `PackSetSource.release(URI,String,String)`, `PackSetSelection.Channel/Release`, `PackSetSnapshot.publication: ChannelTarget`, and existing `PackSetResolver.refresh(ResolverCache)` transport/config. Produces `ResourcePackSourcePinSettings(var type:String="release",var id:String="")`, `ResourcePackSourceSettings.pin: ResourcePackSourcePinSettings? = null`, unchanged `ResourcePackSettings.toClientSource(): PackSetSource`, unchanged prepared target ID and coordinator/public event contracts.
+**Interfaces:** Consumes published `PackSetSource.release(URI,String,String)`, `PackSetSelection.Channel/Release`, `PackSetSnapshot.publication: ChannelTarget`, and public `PackSetClient.refreshNow(): CompletionStage<RefreshResult>` with injected transport/config. Produces `ResourcePackSourcePinSettings(var type:String="release",var id:String="")`, `ResourcePackSourceSettings.pin: ResourcePackSourcePinSettings? = null`, unchanged `ResourcePackSettings.toClientSource(): PackSetSource`, unchanged prepared target ID and coordinator/public event contracts.
 
 - [ ] **Step 1: Tests first / capture RED.** Add the following settings tests before production changes. Existing SDK 0.3.1 lacks selection; an expected new-API compile failure is valid initial RED. Run `./gradlew :velocity:test --tests '*ResourcePackSettingsTest'`; record relevant output honestly. Once the published dependency is available, upgrade dependency plumbing and rerun to expose missing pin support; do not alter settings implementation before RED.
 
@@ -89,22 +89,76 @@ fun toClientSource(): PackSetSource {
 val source = settings.toClientSource()
 val root = "${source.baseUri}/resourcepacks/packsets/${source.packSet}/releases/v$version"
 val bytes = """
-{"schemaVersion":2,"packSet":"${source.packSet}","version":"$version",
-"publication":{"type":"release","id":"v$version"},
-"minecraft":{"version":"26.2","resourcePackFormat":88},
-"catalog":{"coordinate":"gg.grounds:resourcepacks-catalog:$version","file":"grounds-resourcepack-catalog-v$version.jar","id":"grounds:resourcepacks","version":"$version","sha256":"${"a".repeat(64)}","size":3},
-"packs":[{"id":"grounds-content","order":0,"required":true,"resourcePackFormat":88,"role":"content","sha1":"${"b".repeat(40)}","sha256":"${"c".repeat(64)}","size":4,"url":"$root/grounds-content-pack-v$version.zip","uuid":"44591d5b-71f5-5c2a-a5b2-d3ee7be47e53"},
-{"id":"grounds-platform","order":1,"required":true,"resourcePackFormat":88,"role":"platform","sha1":"${"d".repeat(40)}","sha256":"${"e".repeat(64)}","size":5,"url":"$root/grounds-platform-pack-v$version.zip","uuid":"8da7cffe-bb04-55e0-9868-7789ce5de362"}],
-"provenance":{"commit":"1969c1e6a3799e976de46eab019a16b2ee257ea7","repository":"groundsgg/resourcepacks"}}
-""".trimIndent().encodeToByteArray()
+{
+  "catalog": {
+    "coordinate": "gg.grounds:resourcepacks-catalog:$version",
+    "file": "grounds-resourcepack-catalog-v$version.jar",
+    "id": "grounds:resourcepacks",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 3,
+    "version": "$version"
+  },
+  "minecraft": {
+    "resourcePackFormat": 88,
+    "version": "26.2"
+  },
+  "packSet": "${source.packSet}",
+  "packs": [
+    {
+      "id": "grounds-content",
+      "order": 0,
+      "required": true,
+      "resourcePackFormat": 88,
+      "role": "content",
+      "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "size": 4,
+      "url": "$root/grounds-content-pack-v$version.zip",
+      "uuid": "44591d5b-71f5-5c2a-a5b2-d3ee7be47e53"
+    },
+    {
+      "id": "grounds-platform",
+      "order": 1,
+      "required": true,
+      "resourcePackFormat": 88,
+      "role": "platform",
+      "sha1": "dddddddddddddddddddddddddddddddddddddddd",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "size": 5,
+      "url": "$root/grounds-platform-pack-v$version.zip",
+      "uuid": "8da7cffe-bb04-55e0-9868-7789ce5de362"
+    }
+  ],
+  "provenance": {
+    "commit": "1969c1e6a3799e976de46eab019a16b2ee257ea7",
+    "repository": "groundsgg/resourcepacks"
+  },
+  "publication": {
+    "id": "v$version",
+    "type": "release"
+  },
+  "schemaVersion": 2,
+  "version": "$version"
+}
+""".trimIndent().plus("\n").encodeToByteArray()
 val transport = object : PackSetHttpTransport {
     override fun get(uri: URI, ifNoneMatch: String?, timeout: Duration): PackSetHttpResponse {
         check(uri == source.requestUri && ifNoneMatch == null)
         return PackSetHttpResponse(200, null, bytes.inputStream())
     }
 }
-val resolver = PackSetResolver(transport, PackSetClientConfig(source, Path.of("unused-test-cache")))
-return assertIs<RefreshResult.Activated>(resolver.refresh(ResolverCache(null,null,null,null,null))).snapshot
+val directory = Files.createTempDirectory("velocity-release-fixture")
+try {
+    return PackSetClient(PackSetClientConfig(source, directory), transport).use { client ->
+        assertIs<RefreshResult.Activated>(
+            client.refreshNow().toCompletableFuture().get(5, TimeUnit.SECONDS)
+        ).snapshot
+    }
+} finally {
+    Files.walk(directory).use { paths ->
+        paths.sorted(Comparator.reverseOrder()).forEach(Files::delete)
+    }
+}
 ```
 
 Add factory test with pinned settings v1.2.3 and real fixture: prepared request targetId literal v1.2.3, UUID/URI/SHA1 ordered fields, fingerprint unchanged for same snapshot and no request for mismatched other-pin source fallback. Run focused factory test before changing `snapshot.channel.target.id`; expect controlled channel getter failure. Replace with `snapshot.publication.id` only after observed RED.

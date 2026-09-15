@@ -1,5 +1,6 @@
 package gg.grounds.resourcepacks.velocity
 
+import gg.grounds.resourcepacks.client.PackSetSelection
 import gg.grounds.resourcepacks.contract.PackSetChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -30,6 +31,53 @@ class ResourcePackSettingsTest {
                 .readValue("""{"source":{"channel":"edge"}}""", ResourcePackSettings::class.java)
 
         assertEquals("edge", settings.source.channel)
+        assertEquals(null, settings.source.pin)
+    }
+
+    @Test
+    fun `plain Jackson pin overrides edge and keeps the fallback for unpin`() {
+        val value =
+            ObjectMapper()
+                .readValue(
+                    """{"source":{"channel":"edge","pin":{"type":"release","id":"v0.7.0"}}}""",
+                    ResourcePackSettings::class.java,
+                )
+
+        assertEquals(PackSetSelection.Release("v0.7.0"), value.toClientSource().selection)
+        assertEquals("edge", value.source.channel)
+        value.source.pin = null
+        assertEquals(
+            PackSetSelection.Channel(PackSetChannel.EDGE),
+            value.toClientSource().selection,
+        )
+    }
+
+    @Test
+    fun `pin rejects invalid kind ID and fallback channel`() {
+        listOf(
+                """{"type":"build","id":"v0.7.0"}""",
+                """{"type":"release","id":"0.7.0"}""",
+                """{"type":"release","id":"v01.7.0"}""",
+                """{"type":"release","id":"v0.7.0/other"}""",
+                """{"type":"release","id":""}""",
+            )
+            .forEach { pin ->
+                val value =
+                    ObjectMapper()
+                        .readValue("""{"source":{"pin":$pin}}""", ResourcePackSettings::class.java)
+                assertFailsWith<IllegalArgumentException> { value.toClientSource() }
+            }
+
+        assertFailsWith<IllegalArgumentException> {
+            ResourcePackSettings(
+                    source =
+                        ResourcePackSourceSettings(
+                            channel = "invalid",
+                            pin = ResourcePackSourcePinSettings(id = "v0.7.0"),
+                        )
+                )
+                .toClientSource()
+        }
     }
 
     @Test
@@ -113,12 +161,15 @@ class ResourcePackSettingsTest {
 
     @Test
     fun `source conversion maps stable and edge channels`() {
-        assertEquals(PackSetChannel.STABLE, ResourcePackSettings().toClientSource().channel)
         assertEquals(
-            PackSetChannel.EDGE,
+            PackSetSelection.Channel(PackSetChannel.STABLE),
+            ResourcePackSettings().toClientSource().selection,
+        )
+        assertEquals(
+            PackSetSelection.Channel(PackSetChannel.EDGE),
             ResourcePackSettings(source = ResourcePackSourceSettings(channel = "edge"))
                 .toClientSource()
-                .channel,
+                .selection,
         )
     }
 

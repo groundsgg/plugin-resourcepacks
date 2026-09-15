@@ -9,7 +9,10 @@ data class ResourcePackSourceSettings(
     var baseUrl: String = "https://cdn.grounds.gg",
     var packSet: String = "grounds-global",
     var channel: String = "stable",
+    var pin: ResourcePackSourcePinSettings? = null,
 )
+
+data class ResourcePackSourcePinSettings(var type: String = "release", var id: String = "")
 
 data class ResourcePackSettings(
     var schemaVersion: Int = 1,
@@ -18,17 +21,18 @@ data class ResourcePackSettings(
     var required: Boolean = true,
     var prompt: String = "Grounds benötigt seine Resourcepacks.",
 ) {
-    fun toClientSource(): PackSetSource =
-        PackSetSource(
-            URI(source.baseUrl),
-            source.packSet,
+    fun toClientSource(): PackSetSource {
+        val channel =
             when (source.channel) {
                 "stable" -> PackSetChannel.STABLE
                 "edge" -> PackSetChannel.EDGE
                 else ->
                     throw IllegalArgumentException("Unsupported PackSet channel: ${source.channel}")
-            },
-        )
+            }
+        val pin = source.pin ?: return PackSetSource(URI(source.baseUrl), source.packSet, channel)
+        require(pin.type == "release") { "Unsupported PackSet pin type" }
+        return PackSetSource.release(URI(source.baseUrl), source.packSet, pin.id)
+    }
 }
 
 object ResourcePackSettingsDefinition :

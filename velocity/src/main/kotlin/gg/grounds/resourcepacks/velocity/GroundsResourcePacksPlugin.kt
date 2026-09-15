@@ -16,6 +16,7 @@ import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
+import gg.grounds.resourcepacks.client.PackSetSelection
 import java.net.URISyntaxException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -273,7 +274,7 @@ internal constructor(
             }
 
         log.info(
-            "Resource-pack settings applied (channel=${nextSource.channel.name.lowercase()}, " +
+            "Resource-pack settings applied (source=${sourceLogValue(nextSource)}, " +
                 "enabled=${next.enabled}, required=${next.required})"
         )
 
@@ -313,7 +314,7 @@ internal constructor(
         if (next.status in LOGGED_STATES && previousStatus != next.status) {
             log.info(
                 "Resource-pack client transition (status=${next.status}, " +
-                    "sourceChannel=${next.source.channel.name.lowercase()}, " +
+                    "source=${sourceLogValue(next.source)}, " +
                     "currentFingerprint=${next.current?.fingerprint}, " +
                     "fallbackFingerprint=${next.degradedFallback?.fingerprint}, " +
                     "reason=${normalizeDiagnosticReason(next.lastError)})"
@@ -351,6 +352,12 @@ internal constructor(
             else handle.close()
         }
     }
+
+    private fun sourceLogValue(source: gg.grounds.resourcepacks.client.PackSetSource): String =
+        when (val selection = source.selection) {
+            is PackSetSelection.Channel -> "channel:${selection.channel.name.lowercase()}"
+            is PackSetSelection.Release -> "release:${selection.id}"
+        }
 
     private fun expireInitialDelivery(playerId: java.util.UUID, session: InitialDeadline) {
         if (!coordinator.cancelInitial(playerId, session.session)) return

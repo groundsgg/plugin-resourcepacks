@@ -32,7 +32,7 @@ class VelocityPackRequestFactory {
                 .prompt(Component.text(settings.prompt))
                 .build(),
             "${snapshot.source.cacheKey}:${snapshot.fingerprint}:${settings.required}:${settings.prompt}",
-            snapshot.channel.target.id,
+            snapshot.publication.id,
             snapshot.packs.mapTo(linkedSetOf(), ResolvedPack::uuid),
         )
     }
