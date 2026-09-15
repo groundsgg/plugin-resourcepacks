@@ -54,10 +54,11 @@ is complete.
 ## Runtime boundary
 
 The Velocity runtime reads an immutable in-memory snapshot during player login: login does no
-synchronous configuration-service or CDN I/O. The client validates an initial snapshot and reuses
-its immutable local cache when offline; it does not poll periodically. Configuration updates
-resolve in the background and are adopted only at the next safe transition. Validated CDN state is
-cached under the plugin data directory at `packset-cache` (normally
+synchronous configuration-service or CDN I/O. Stable and Edge channels continue periodic refreshes.
+A release pin validates an initial snapshot and reuses its immutable local cache when offline;
+release pins do not poll periodically. Configuration updates resolve in the background and are
+adopted only at the next safe transition. Validated CDN state is cached under the plugin data
+directory at `packset-cache` (normally
 `plugins/plugin-resourcepacks/packset-cache`).
 
 An arbitrary HTTPS origin is an administrator capability. Until service-config has application-level

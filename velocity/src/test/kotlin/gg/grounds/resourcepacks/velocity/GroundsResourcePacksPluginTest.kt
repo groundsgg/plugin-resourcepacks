@@ -18,6 +18,7 @@ import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
+import gg.grounds.resourcepacks.client.PackSetSelection
 import gg.grounds.resourcepacks.client.PackSetSource
 import java.lang.reflect.Proxy
 import java.nio.file.Files
@@ -504,6 +505,34 @@ class GroundsResourcePacksPluginTest {
         )
         assertTrue(log.messages.last().contains("reason=invalid_settings"))
         assertFalse(log.messages.last().contains("not-a-release"))
+    }
+
+    @Test
+    fun `long valid release pin is bounded in settings and transition diagnostics`() {
+        val id = "v0.7.0+" + "a".repeat(512)
+        val settings = settings(pin = ResourcePackSourcePinSettings(id = id))
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), settings)
+        val clients = FakeClientFactory()
+        val log = FakeResourcePackLog()
+        val plugin = plugin(gateway, clients, log = log)
+
+        plugin.onInitialize(ProxyInitializeEvent())
+        val source = settings.toClientSource()
+        assertEquals(id, (source.selection as PackSetSelection.Release).id)
+        clients.created
+            .single()
+            .emit(PackSetClientState(source, null, null, PackSetClientStatus.UNAVAILABLE, null))
+
+        val releaseSegments =
+            log.messages.mapNotNull { message ->
+                message
+                    .substringAfter("source=release:", missingDelimiterValue = "")
+                    .takeIf(String::isNotEmpty)
+                    ?.let { "source=release:$it".substringBefore(",").substringBefore(")") }
+            }
+        assertEquals(2, releaseSegments.size)
+        assertTrue(releaseSegments.all { it.length <= 138 && it.endsWith("...") })
+        assertTrue(releaseSegments.none { it.contains(id) })
     }
 
     // Break caught: a delayed callback carrying an old payload can reconfigure the client back to

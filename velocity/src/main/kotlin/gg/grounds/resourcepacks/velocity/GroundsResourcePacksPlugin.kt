@@ -356,8 +356,11 @@ internal constructor(
     private fun sourceLogValue(source: gg.grounds.resourcepacks.client.PackSetSource): String =
         when (val selection = source.selection) {
             is PackSetSelection.Channel -> "channel:${selection.channel.name.lowercase()}"
-            is PackSetSelection.Release -> "release:${selection.id}"
+            is PackSetSelection.Release -> "release:${displayReleaseId(selection.id)}"
         }
+
+    private fun displayReleaseId(id: String): String =
+        if (id.length <= 123) id else "${id.take(120)}..."
 
     private fun expireInitialDelivery(playerId: java.util.UUID, session: InitialDeadline) {
         if (!coordinator.cancelInitial(playerId, session.session)) return
