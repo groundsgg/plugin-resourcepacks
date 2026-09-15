@@ -10,10 +10,11 @@ fun interface PackSender {
 }
 
 internal enum class InitialPackDelivery { SENT, WAITING_FOR_SNAPSHOT, NO_REQUEST }
+internal class InitialDeliverySession internal constructor()
 
 internal fun interface ResourcePackDeliveryObserver { fun sent(player: Player, prepared: PreparedPackRequest) }
 internal fun interface ResourcePackDeliveryExpectation { fun expect(player: Player, prepared: PreparedPackRequest) }
-internal fun interface InitialPackDeliveryCompletion { fun completed(playerId: UUID) }
+internal fun interface InitialPackDeliveryCompletion { fun completed(playerId: UUID, session: InitialDeliverySession) }
 
 internal class ResourcePackCoordinator(
     private val settings: () -> ResourcePackSettings?,
@@ -22,38 +23,46 @@ internal class ResourcePackCoordinator(
     private val requestFactory: VelocityPackRequestFactory,
     private val deliveryObserver: ResourcePackDeliveryObserver = ResourcePackDeliveryObserver { _, _ -> },
     private val deliveryExpectation: ResourcePackDeliveryExpectation = ResourcePackDeliveryExpectation { _, _ -> },
-    private val initialDeliveryCompleted: InitialPackDeliveryCompletion = InitialPackDeliveryCompletion { },
+    private val initialDeliveryCompleted: InitialPackDeliveryCompletion = InitialPackDeliveryCompletion { _, _ -> },
 ) {
     private val delivery = Any()
     private val sent = ConcurrentHashMap<UUID, String>()
-    private val pendingInitial = HashMap<UUID, Player>()
-    private val initiallyCompleted = HashSet<UUID>()
+    private val pendingInitial = HashMap<UUID, PendingInitial>()
+    private val initiallyCompleted = HashMap<UUID, InitialDeliverySession>()
     private val targetAttributions = LinkedHashMap<PlayerPack, TargetAttribution>(16, 0.75f, true)
     private val pendingTargetAttributions = HashMap<PlayerPack, TargetAttribution>()
     private var currentSettings: ResourcePackSettings? = null
     private var closed = false
 
-    fun onLogin(player: Player): InitialPackDelivery = synchronized(delivery) {
+    fun newInitialSession() = InitialDeliverySession()
+    fun onLogin(player: Player): InitialPackDelivery = onLogin(player, newInitialSession())
+    fun onLogin(player: Player, session: InitialDeliverySession): InitialPackDelivery = synchronized(delivery) {
         if (closed) return@synchronized InitialPackDelivery.WAITING_FOR_SNAPSHOT
         val configured = settings()
         currentSettings = configured
         when {
-            configured == null -> waitForSnapshotLocked(player)
+            configured == null -> waitForSnapshotLocked(player, session)
             !configured.enabled -> {
-                completeInitialLocked(player.uniqueId, notify = false)
+                completeInitialLocked(player.uniqueId, session, notify = false)
                 InitialPackDelivery.NO_REQUEST
             }
             else -> requestFactory.prepare(configured, clientState())?.let { prepared ->
                 dispatchLocked(player, prepared, isolateSendFailure = false)
-                completeInitialLocked(player.uniqueId, notify = false)
+                completeInitialLocked(player.uniqueId, session, notify = false)
                 InitialPackDelivery.SENT
-            } ?: waitForSnapshotLocked(player)
+            } ?: waitForSnapshotLocked(player, session)
         }
     }
 
     fun onServerSwitch(player: Player) = synchronized(delivery) {
-        if (closed || player.uniqueId !in initiallyCompleted) return@synchronized
-        val configured = settings() ?: return@synchronized
+        onServerSwitchLocked(player, initiallyCompleted[player.uniqueId])
+    }
+    fun onServerSwitch(player: Player, session: InitialDeliverySession) = synchronized(delivery) {
+        onServerSwitchLocked(player, session)
+    }
+    private fun onServerSwitchLocked(player: Player, session: InitialDeliverySession?) {
+        if (closed || session == null || initiallyCompleted[player.uniqueId] !== session) return
+        val configured = settings() ?: return
         currentSettings = configured
         requestFactory.prepare(configured, clientState())?.let { dispatchLocked(player, it, isolateSendFailure = true) }
     }
@@ -62,11 +71,13 @@ internal class ResourcePackCoordinator(
         if (closed) return@synchronized
         val configured = settings() ?: return@synchronized
         currentSettings = configured
-        pendingInitial.values.toList().forEach { player ->
-            if (!configured.enabled) completeInitialLocked(player.uniqueId, notify = true)
+        pendingInitial.values.toList().forEach { pending ->
+            val player = pending.player
+            if (pendingInitial[player.uniqueId] !== pending) return@forEach
+            if (!configured.enabled) completeInitialLocked(player.uniqueId, pending.session, notify = true)
             else requestFactory.prepare(configured, state)?.let { prepared ->
                 if (dispatchLocked(player, prepared, isolateSendFailure = true))
-                    completeInitialLocked(player.uniqueId, notify = true)
+                    completeInitialLocked(player.uniqueId, pending.session, notify = true)
             }
         }
     }
@@ -98,6 +109,13 @@ internal class ResourcePackCoordinator(
         targetAttributions.keys.removeIf { it.playerId == playerId }
         pendingTargetAttributions.keys.removeIf { it.playerId == playerId }
     }
+    fun cancelInitial(playerId: UUID, session: InitialDeliverySession): Boolean = synchronized(delivery) {
+        val pending = pendingInitial[playerId] ?: return@synchronized false
+        if (pending.session !== session) return@synchronized false
+        pendingInitial.remove(playerId)
+        initiallyCompleted.remove(playerId, session)
+        true
+    }
 
     internal fun targetId(playerId: UUID, packId: UUID?): String? = synchronized(delivery) {
         packId?.let { pendingTargetAttributions[PlayerPack(playerId, it)] ?: targetAttributions[PlayerPack(playerId, it)] }
@@ -119,15 +137,16 @@ internal class ResourcePackCoordinator(
         pendingTargetAttributions.clear()
     }
 
-    private fun waitForSnapshotLocked(player: Player): InitialPackDelivery {
-        pendingInitial[player.uniqueId] = player
+    private fun waitForSnapshotLocked(player: Player, session: InitialDeliverySession): InitialPackDelivery {
+        pendingInitial[player.uniqueId] = PendingInitial(player, session)
+        initiallyCompleted.remove(player.uniqueId)
         return InitialPackDelivery.WAITING_FOR_SNAPSHOT
     }
 
-    private fun completeInitialLocked(playerId: UUID, notify: Boolean) {
+    private fun completeInitialLocked(playerId: UUID, session: InitialDeliverySession, notify: Boolean) {
         pendingInitial.remove(playerId)
-        initiallyCompleted += playerId
-        if (notify) initialDeliveryCompleted.completed(playerId)
+        initiallyCompleted[playerId] = session
+        if (notify) initialDeliveryCompleted.completed(playerId, session)
     }
 
     private fun dispatchLocked(player: Player, prepared: PreparedPackRequest, isolateSendFailure: Boolean): Boolean {
@@ -158,6 +177,7 @@ internal class ResourcePackCoordinator(
     }
 
     private data class PlayerPack(val playerId: UUID, val packId: UUID)
+    private data class PendingInitial(val player: Player, val session: InitialDeliverySession)
     private sealed interface TargetAttribution {
         data class Exact(val targetId: String) : TargetAttribution
         data object Ambiguous : TargetAttribution

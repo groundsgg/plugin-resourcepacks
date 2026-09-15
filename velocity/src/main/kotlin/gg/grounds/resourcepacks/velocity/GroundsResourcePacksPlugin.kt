@@ -137,13 +137,18 @@ internal constructor(
         if (stopped.get()) return null
         val playerId = event.player().uniqueId
         val completion = configurationWaiter.begin(playerId)
+        val session = coordinator.newInitialSession()
+        val initial = InitialDeadline(event.player(), completion, session)
+        synchronized(deadlines) { initialDeadlines[playerId] = initial }
         try {
-            when (coordinator.onLogin(event.player())) {
+            when (coordinator.onLogin(event.player(), session)) {
                 InitialPackDelivery.SENT, InitialPackDelivery.NO_REQUEST -> configurationWaiter.seal(playerId)
-                InitialPackDelivery.WAITING_FOR_SNAPSHOT -> scheduleSnapshotDeadline(event.player(), completion)
+                InitialPackDelivery.WAITING_FOR_SNAPSHOT -> scheduleSnapshotDeadline(initial)
             }
         } catch (failure: Throwable) {
-            configurationWaiter.forget(playerId)
+            cancelDeadline(playerId)
+            coordinator.forget(playerId)
+            configurationWaiter.forget(playerId, completion)
             throw failure
         }
         return if (completion.isDone) null else EventTask.resumeWhenComplete(completion)
@@ -158,7 +163,9 @@ internal constructor(
 
     @Subscribe
     fun onServerPostConnect(event: ServerPostConnectEvent) {
-        if (!stopped.get() && event.previousServer != null) coordinator.onServerSwitch(event.player)
+        val initial = synchronized(deadlines) { initialDeadlines[event.player.uniqueId] }
+        if (!stopped.get() && event.previousServer != null && initial != null && initial.completion.isDone)
+            coordinator.onServerSwitch(event.player, initial.session)
     }
 
     @Subscribe
@@ -269,30 +276,29 @@ internal constructor(
         if (!stopped.get()) coordinator.onSnapshot(next)
     }
 
-    private fun completeInitialConfiguration(playerId: java.util.UUID) {
-        cancelDeadline(playerId)
-        configurationWaiter.seal(playerId)
+    private fun completeInitialConfiguration(playerId: java.util.UUID, session: InitialDeliverySession) {
+        val initial = synchronized(deadlines) { initialDeadlines[playerId] }
+        if (initial?.session !== session) return
+        initial.handle?.close()
+        initial.handle = null
+        initial.ready = true
+        configurationWaiter.seal(playerId, initial.completion)
     }
 
-    private fun scheduleSnapshotDeadline(player: com.velocitypowered.api.proxy.Player, completion: CompletableFuture<Void>) {
-        val session = InitialDeadline(player, completion)
-        session.handle = snapshotDeadline.schedule { expireInitialDelivery(player.uniqueId, session) }
+    private fun scheduleSnapshotDeadline(session: InitialDeadline) {
+        val handle = snapshotDeadline.schedule { expireInitialDelivery(session.player.uniqueId, session) }
         synchronized(deadlines) {
-            if (configurationWaiter.isPending(player.uniqueId, completion) && !stopped.get())
-                initialDeadlines[player.uniqueId] = session
-            else session.handle?.close()
+            if (initialDeadlines[session.player.uniqueId] === session && !session.ready && !stopped.get() && configurationWaiter.isPending(session.player.uniqueId, session.completion))
+                session.handle = handle
+            else handle.close()
         }
     }
 
     private fun expireInitialDelivery(playerId: java.util.UUID, session: InitialDeadline) {
-        synchronized(deadlines) {
-            if (initialDeadlines[playerId] !== session) return
-            initialDeadlines.remove(playerId)
-        }
-        if (!configurationWaiter.isPending(playerId, session.completion)) return
-        coordinator.forget(playerId)
+        if (!coordinator.cancelInitial(playerId, session.session)) return
+        synchronized(deadlines) { if (initialDeadlines[playerId] !== session) return; initialDeadlines.remove(playerId) }
         session.player.disconnect(Component.text("Resource packs are currently unavailable. Please try again."))
-        configurationWaiter.forget(playerId)
+        configurationWaiter.forget(playerId, session.completion)
     }
 
     private fun cancelDeadline(playerId: java.util.UUID) {
@@ -302,7 +308,8 @@ internal constructor(
     private class InitialDeadline(
         val player: com.velocitypowered.api.proxy.Player,
         val completion: CompletableFuture<Void>,
-    ) { var handle: AutoCloseable? = null }
+        val session: InitialDeliverySession,
+    ) { var handle: AutoCloseable? = null; var ready = false }
 
     private companion object {
         val LOGGED_STATES =

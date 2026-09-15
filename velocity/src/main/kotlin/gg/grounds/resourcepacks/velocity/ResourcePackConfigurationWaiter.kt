@@ -44,6 +44,21 @@ internal class ResourcePackConfigurationWaiter {
 
     fun forget(playerId: UUID) { synchronized(monitor) { pending.remove(playerId)?.completion }?.complete(null) }
 
+    fun seal(playerId: UUID, completion: CompletableFuture<Void>) {
+        val resolved = synchronized(monitor) {
+            if (pending[playerId]?.completion !== completion) null else {
+                pending[playerId]!!.sealed = true
+                completeIfResolved(playerId, pending[playerId]!!)
+            }
+        }
+        resolved?.complete(null)
+    }
+
+    fun forget(playerId: UUID, completion: CompletableFuture<Void>) {
+        synchronized(monitor) { if (pending[playerId]?.completion === completion) pending.remove(playerId)?.completion else null }
+            ?.complete(null)
+    }
+
     fun isPending(playerId: UUID, completion: CompletableFuture<Void>): Boolean =
         synchronized(monitor) { pending[playerId]?.completion === completion }
 
