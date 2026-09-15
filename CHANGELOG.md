@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.11...v0.2.0) (2026-09-15)
+
+
+### Features
+
+* **velocity:** consume immutable release pins ([#27](https://github.com/groundsgg/plugin-resourcepacks/issues/27)) ([f1e4541](https://github.com/groundsgg/plugin-resourcepacks/commit/f1e454191ba615b7c601b91ab518dab204bf4366))
+
 ## [0.1.11](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.10...v0.1.11) (2026-09-15)
 
 
