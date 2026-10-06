@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.2.0...v1.0.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* the proxy rejects 26.2 / format 88 pack-set manifests.
+
+### Features
+
+* read the 26.3 pack set ([#29](https://github.com/groundsgg/plugin-resourcepacks/issues/29)) ([b5f0875](https://github.com/groundsgg/plugin-resourcepacks/commit/b5f08758293336270fcdeb83bed7c0ff34b447c9))
+
 ## [0.2.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.1.11...v0.2.0) (2026-09-15)
 
 
