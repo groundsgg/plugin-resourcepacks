@@ -109,8 +109,8 @@ internal fun releaseSnapshot(
             "version": "$version"
           },
           "minecraft": {
-            "resourcePackFormat": 88,
-            "version": "26.2"
+            "resourcePackFormat": 97,
+            "version": "26.3"
           },
           "packSet": "${source.packSet}",
           "packs": [
@@ -118,7 +118,7 @@ internal fun releaseSnapshot(
               "id": "grounds-content",
               "order": 0,
               "required": true,
-              "resourcePackFormat": 88,
+              "resourcePackFormat": 97,
               "role": "content",
               "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
               "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -130,7 +130,7 @@ internal fun releaseSnapshot(
               "id": "grounds-platform",
               "order": 1,
               "required": true,
-              "resourcePackFormat": 88,
+              "resourcePackFormat": 97,
               "role": "platform",
               "sha1": "dddddddddddddddddddddddddddddddddddddddd",
               "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
