@@ -3,19 +3,23 @@ package gg.grounds.resourcepacks.velocity
 import com.velocitypowered.api.event.Continuation
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
+import com.velocitypowered.api.event.connection.PluginMessageEvent
 import com.velocitypowered.api.event.connection.PostLoginEvent
 import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
 import com.velocitypowered.api.event.player.ServerPostConnectEvent
 import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent
+import com.velocitypowered.api.network.ProtocolVersion
 import com.velocitypowered.api.plugin.Plugin
 import com.velocitypowered.api.proxy.Player
+import com.velocitypowered.api.proxy.ServerConnection
 import gg.grounds.config.ConfigDefinition
 import gg.grounds.config.ConfigDefinitionNotReadyException
 import gg.grounds.config.ConfigRegistrationResult
 import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
+import gg.grounds.proxy.api.PlayerChatAppearanceQuery
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
 import gg.grounds.resourcepacks.client.PackSetSelection
@@ -47,7 +51,7 @@ class GroundsResourcePacksPluginTest {
         assertEquals("plugin-resourcepacks", annotation.id)
         assertEquals(BuildInfo.VERSION, annotation.version)
         assertEquals(
-            listOf("plugin-config" to false),
+            listOf("plugin-config" to false, "plugin-proxy" to false, "floodgate" to true),
             annotation.dependencies.map { it.id to it.optional },
         )
     }
@@ -80,6 +84,174 @@ class GroundsResourcePacksPluginTest {
         VelocityPlayerPackSender.send(player, request)
 
         assertSame(request, received)
+    }
+
+    @Test
+    fun `appearance query is registered loaded and withdrawn with plugin lifecycle`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val registry = RecordingPlayerChatAppearanceRegistry()
+        val bridge = RecordingPlayerChatStyleBridge(connected = false)
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var sends = 0
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                sender = PackSender { _, _ -> sends++ },
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "CHAT_FONT_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                appearanceProtocol = { ProtocolVersion.MINECRAFT_1_21_9 },
+                platformLookup = ChatPlatformLookup { false },
+                appearanceRegistry = registry,
+                chatStyleBridge = bridge,
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+        assertEquals(1, bridge.registrations)
+        val query = requireNotNull(registry.query)
+        val initialSnapshot = snapshot(initial, packs = listOf(resolvedPack(role = "platform")))
+        val client = clients.created.single()
+        client.emit(readyState(initial, initialSnapshot))
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        assertFalse(query.appearanceOf(online.uniqueId).chatFontReady)
+
+        terminalStatus(events, online)
+        assertTrue(query.appearanceOf(online.uniqueId).chatFontReady)
+        assertEquals(emptyList(), bridge.snapshots)
+
+        val sendsBeforeRepeatedConfiguration = sends
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        assertEquals(sendsBeforeRepeatedConfiguration, sends)
+        assertTrue(query.appearanceOf(online.uniqueId).chatFontReady)
+
+        bridge.connected = true
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        assertEquals(listOf(true), bridge.snapshots.map { it.second.ready })
+
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(1, sends)
+        assertTrue(query.appearanceOf(online.uniqueId).chatFontReady)
+        assertEquals(listOf(true, true), bridge.snapshots.map { it.second.ready })
+
+        client.emit(
+            readyState(
+                initial,
+                snapshot(initial, sequence = 2, packs = listOf(resolvedPack(role = "platform"))),
+            )
+        )
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertEquals(2, sends)
+        assertFalse(query.appearanceOf(online.uniqueId).chatFontReady)
+        assertEquals(listOf(true, true, false, false), bridge.snapshots.map { it.second.ready })
+        terminalStatus(events, online)
+        assertTrue(query.appearanceOf(online.uniqueId).chatFontReady)
+        assertEquals(
+            listOf(true, true, false, false, true),
+            bridge.snapshots.map { it.second.ready },
+        )
+
+        packStatus(events, online, PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD)
+        assertFalse(bridge.snapshots.last().second.ready)
+        terminalStatus(events, online)
+        plugin.onDisconnect(DisconnectEvent(online, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        assertEquals(
+            listOf(false, true, false),
+            bridge.snapshots.takeLast(3).map { it.second.ready },
+        )
+        assertTrue(
+            bridge.snapshots.zipWithNext().all { (first, second) ->
+                second.second.revision > first.second.revision
+            }
+        )
+
+        plugin.onShutdown(ProxyShutdownEvent())
+        assertEquals(1, registry.unregisters)
+        assertEquals(1, bridge.unregistrations)
+        assertFalse(query.appearanceOf(online.uniqueId).chatFontReady)
+    }
+
+    @Test
+    fun `loaded pack stays false for linked Bedrock and unknown platform`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val bridge = RecordingPlayerChatStyleBridge()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var bedrock: Boolean? = true
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "CHAT_FONT_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                appearanceProtocol = { ProtocolVersion.MINECRAFT_1_21_9 },
+                platformLookup = ChatPlatformLookup { bedrock },
+                chatStyleBridge = bridge,
+            )
+
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        terminalStatus(events, online)
+        assertFalse(bridge.snapshots.last().second.ready)
+
+        bedrock = null
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        assertFalse(bridge.snapshots.last().second.ready)
+
+        bedrock = false
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertTrue(bridge.snapshots.last().second.ready)
+    }
+
+    @Test
+    fun `chat style channel blocks client and server supplied packets`() {
+        val bridge = RecordingPlayerChatStyleBridge()
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready()),
+                FakeClientFactory(),
+                chatStyleBridge = bridge,
+            )
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val server =
+            Proxy.newProxyInstance(
+                ServerConnection::class.java.classLoader,
+                arrayOf(ServerConnection::class.java),
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "equals" -> proxy === args?.singleOrNull()
+                    "hashCode" -> 1
+                    else -> defaultValue(method.returnType)
+                }
+            } as ServerConnection
+
+        val clientPacket = PluginMessageEvent(online, server, bridge.identifier, byteArrayOf(1))
+        val serverPacket = PluginMessageEvent(server, online, bridge.identifier, byteArrayOf(1))
+        plugin.onPluginMessage(clientPacket)
+        plugin.onPluginMessage(serverPacket)
+
+        assertFalse(clientPacket.result.isAllowed)
+        assertFalse(serverPacket.result.isAllowed)
     }
 
     // Break caught: sending outside the client's configuration state can bypass the configured
@@ -983,6 +1155,8 @@ class GroundsResourcePacksPluginTest {
         val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
         val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") { disconnects++ }
         val sent = mutableListOf<Player>()
+        val registry = RecordingPlayerChatAppearanceRegistry()
+        val bridge = RecordingPlayerChatStyleBridge()
         val plugin =
             plugin(
                 FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
@@ -990,8 +1164,18 @@ class GroundsResourcePacksPluginTest {
                 sender = PackSender { player, _ -> sent += player },
                 events = events,
                 deadline = deadline,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "CHAT_FONT_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                appearanceProtocol = { ProtocolVersion.MINECRAFT_1_21_9 },
+                platformLookup = ChatPlatformLookup { false },
+                appearanceRegistry = registry,
+                chatStyleBridge = bridge,
             )
         plugin.onInitialize(ProxyInitializeEvent())
+        val query = requireNotNull(registry.query)
         val oldContinuation = RecordingContinuation()
         requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null)))
             .execute(oldContinuation)
@@ -1005,14 +1189,99 @@ class GroundsResourcePacksPluginTest {
         plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
         assertEquals(0, disconnects)
         assertEquals(0, replacementContinuation.resumes)
-        clients.created.single().emit(readyState(initial, snapshot(initial)))
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
         assertEquals(listOf(replacement), sent)
         assertTrue(deadline.entries[1].cancelled)
         deadline.invoke(1)
         assertEquals(0, replacementContinuation.resumes)
+        terminalStatus(events, old)
+        assertFalse(query.appearanceOf(replacement.uniqueId).chatFontReady)
         assertEquals(0, disconnects)
         terminalStatus(events, replacement)
         assertEquals(1, replacementContinuation.resumes)
+        assertTrue(query.appearanceOf(replacement.uniqueId).chatFontReady)
+        val snapshotsBeforeOldDisconnect = bridge.snapshots.size
+        plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        assertTrue(query.appearanceOf(replacement.uniqueId).chatFontReady)
+        assertEquals(snapshotsBeforeOldDisconnect, bridge.snapshots.size)
+    }
+
+    @Test
+    fun `status admitted before replacement cannot restore old session readiness`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val registry = RecordingPlayerChatAppearanceRegistry()
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val eligibilityEntered = CountDownLatch(1)
+        val releaseEligibility = CountDownLatch(1)
+        val blockEligibility = AtomicBoolean(false)
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "CHAT_FONT_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                appearanceProtocol = { ProtocolVersion.MINECRAFT_1_21_9 },
+                platformLookup =
+                    ChatPlatformLookup {
+                        if (blockEligibility.compareAndSet(true, false)) {
+                            eligibilityEntered.countDown()
+                            assertTrue(releaseEligibility.await(1, TimeUnit.SECONDS))
+                        }
+                        false
+                    },
+                appearanceRegistry = registry,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null))
+        blockEligibility.set(true)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val oldStatus = executor.submit { terminalStatus(events, old) }
+            assertTrue(eligibilityEntered.await(1, TimeUnit.SECONDS))
+            val replacementStarted = CountDownLatch(1)
+            val replacementLogin =
+                executor.submit {
+                    replacementStarted.countDown()
+                    plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+                }
+            assertTrue(replacementStarted.await(1, TimeUnit.SECONDS))
+            releaseEligibility.countDown()
+            oldStatus.get(1, TimeUnit.SECONDS)
+            replacementLogin.get(1, TimeUnit.SECONDS)
+        } finally {
+            releaseEligibility.countDown()
+            executor.shutdownNow()
+        }
+
+        val query = requireNotNull(registry.query)
+        assertFalse(query.appearanceOf(replacement.uniqueId).chatFontReady)
+        plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        terminalStatus(events, old)
+        assertFalse(query.appearanceOf(replacement.uniqueId).chatFontReady)
+        terminalStatus(events, replacement)
+        assertTrue(query.appearanceOf(replacement.uniqueId).chatFontReady)
     }
 
     @Test
@@ -1126,13 +1395,16 @@ class GroundsResourcePacksPluginTest {
     }
 
     private fun terminalStatus(events: FakeEventRegistry, player: Player) {
+        packStatus(events, player, PlayerResourcePackStatusEvent.Status.SUCCESSFUL)
+    }
+
+    private fun packStatus(
+        events: FakeEventRegistry,
+        player: Player,
+        status: PlayerResourcePackStatusEvent.Status,
+    ) {
         (events.registered.single().second as ResourcePackStatusListener).onStatus(
-            PlayerResourcePackStatusEvent(
-                player,
-                resolvedPack().uuid,
-                PlayerResourcePackStatusEvent.Status.SUCCESSFUL,
-                null,
-            )
+            PlayerResourcePackStatusEvent(player, resolvedPack().uuid, status, null)
         )
     }
 
@@ -1371,16 +1643,25 @@ class GroundsResourcePacksPluginTest {
         events: FakeEventRegistry = FakeEventRegistry(),
         log: FakeResourcePackLog = FakeResourcePackLog(),
         deadline: ResourcePackSnapshotDeadline = FakeSnapshotDeadline(),
+        environment: Map<String, String> = mapOf("GROUNDS_ENVIRONMENT" to "stage"),
+        appearanceProtocol: (UUID) -> ProtocolVersion? = { null },
+        platformLookup: ChatPlatformLookup = ChatPlatformLookup { null },
+        appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
+        chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     ) =
         GroundsResourcePacksPlugin(
             dataDirectory = directory,
-            environment = { mapOf("GROUNDS_ENVIRONMENT" to "stage") },
+            environment = { environment },
             configGateway = gateway,
             clientFactory = clients,
             sender = sender,
             eventRegistry = events,
             log = log,
             snapshotDeadline = deadline,
+            appearanceProtocol = appearanceProtocol,
+            platformLookup = platformLookup,
+            appearanceRegistry = appearanceRegistry,
+            chatStyleBridge = chatStyleBridge,
         )
 
     private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
@@ -1392,6 +1673,43 @@ class GroundsResourcePacksPluginTest {
                     method.parameterTypes.contentEquals(arrayOf(event.javaClass))
             }
             .forEach { method -> method.invoke(plugin, event) }
+    }
+}
+
+internal class RecordingPlayerChatStyleBridge(var connected: Boolean = true) :
+    PlayerChatStyleBridge {
+    override val identifier =
+        com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier.from(
+            PlayerChatStylePayload.CHANNEL
+        )
+    val snapshots = mutableListOf<Pair<UUID, PlayerChatStyleSnapshot>>()
+    var registrations = 0
+    var unregistrations = 0
+
+    override fun register() {
+        registrations++
+    }
+
+    override fun unregister() {
+        unregistrations++
+    }
+
+    override fun send(player: Player, snapshot: PlayerChatStyleSnapshot) {
+        if (connected) snapshots += player.uniqueId to snapshot
+    }
+}
+
+internal class RecordingPlayerChatAppearanceRegistry : PlayerChatAppearanceRegistry {
+    var query: PlayerChatAppearanceQuery? = null
+    var unregisters = 0
+
+    override fun register(query: PlayerChatAppearanceQuery) {
+        this.query = query
+    }
+
+    override fun unregister() {
+        unregisters++
+        query = null
     }
 }
 

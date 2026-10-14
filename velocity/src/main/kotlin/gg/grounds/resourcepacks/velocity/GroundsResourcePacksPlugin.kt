@@ -4,6 +4,8 @@ import com.google.inject.Inject
 import com.velocitypowered.api.event.EventTask
 import com.velocitypowered.api.event.Subscribe
 import com.velocitypowered.api.event.connection.DisconnectEvent
+import com.velocitypowered.api.event.connection.PluginMessageEvent
+import com.velocitypowered.api.event.player.PlayerResourcePackStatusEvent
 import com.velocitypowered.api.event.player.ServerPostConnectEvent
 import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent
@@ -14,6 +16,7 @@ import com.velocitypowered.api.plugin.annotation.DataDirectory
 import com.velocitypowered.api.proxy.ProxyServer
 import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
+import gg.grounds.i18n.Translations
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
 import gg.grounds.resourcepacks.client.PackSetSelection
@@ -23,7 +26,6 @@ import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import net.kyori.adventure.text.Component
 import org.slf4j.Logger
 
 @Plugin(
@@ -33,7 +35,12 @@ import org.slf4j.Logger
     description = "Delivers ordered resource-pack requests to players on login",
     authors = ["Grounds Development Team and contributors"],
     url = "https://github.com/groundsgg/plugin-resourcepacks",
-    dependencies = [Dependency(id = "plugin-config")],
+    dependencies =
+        [
+            Dependency(id = "plugin-config"),
+            Dependency(id = "plugin-proxy"),
+            Dependency(id = "floodgate", optional = true),
+        ],
 )
 class GroundsResourcePacksPlugin
 internal constructor(
@@ -46,6 +53,14 @@ internal constructor(
     private val log: ResourcePackLog,
     private val snapshotDeadline: ResourcePackSnapshotDeadline =
         ScheduledResourcePackSnapshotDeadline(),
+    private val appearanceProtocol:
+        (java.util.UUID) -> com.velocitypowered.api.network.ProtocolVersion? =
+        {
+            null
+        },
+    private val platformLookup: ChatPlatformLookup = ChatPlatformLookup { null },
+    private val appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
+    private val chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
 ) {
     @Inject
     constructor(
@@ -60,6 +75,16 @@ internal constructor(
         VelocityPlayerPackSender,
         VelocityResourcePackEventRegistry(proxy),
         Slf4jResourcePackLog(logger),
+        appearanceProtocol = { playerId ->
+            proxy.getPlayer(playerId).orElse(null)?.protocolVersion
+        },
+        platformLookup = FloodgateChatPlatformLookup.create(logger),
+        appearanceRegistry = ProxyPlayerChatAppearanceRegistry,
+        chatStyleBridge =
+            VelocityPlayerChatStyleBridge(
+                registerChannel = { proxy.channelRegistrar.register(it) },
+                unregisterChannel = { proxy.channelRegistrar.unregister(it) },
+            ),
     )
 
     private val lifecycle = Any()
@@ -70,6 +95,9 @@ internal constructor(
     private val state = AtomicReference(closedState())
     private val lastLoggedStatus = AtomicReference<PackSetClientStatus?>(null)
     private val configurationWaiter = ResourcePackConfigurationWaiter()
+    private val appearanceTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
+    private val messages =
+        Translations.forBundle("gg.grounds.resourcepacks.messages", javaClass.classLoader)
     private val deadlines = Any()
     private val initialDeadlines = HashMap<java.util.UUID, InitialDeadline>()
     private val coordinator =
@@ -84,6 +112,8 @@ internal constructor(
             requestFactory = VelocityPackRequestFactory(),
             deliveryObserver =
                 ResourcePackDeliveryObserver { player, prepared ->
+                    appearanceTracker.get()?.offered(player.uniqueId, prepared.packHashes)
+                    publishChatStyle(player)
                     log.info(
                         "Resource-pack request sent (playerId=${player.uniqueId}, " +
                             "targetId=${prepared.targetId}, fingerprint=${prepared.fingerprint}, " +
@@ -106,23 +136,54 @@ internal constructor(
     fun onInitialize(@Suppress("UNUSED_PARAMETER") event: ProxyInitializeEvent) {
         if (!initialized.compareAndSet(false, true)) return
         val deployment = environment()
+        val tracker =
+            PlayerChatAppearanceTracker(ChatAppearanceEnvironment.from(deployment).fontPackSha1s)
+        appearanceTracker.set(tracker)
+        appearanceRegistry.register(
+            ResourcePackPlayerChatAppearanceQuery(appearanceProtocol, platformLookup, tracker)
+        )
+        chatStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
         val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
             ResourcePackStatusListener(
                 metrics,
-                coordinator::ownsPack,
+                { player, packId -> coordinator.ownsPack(player, packId) },
                 coordinator::targetId,
                 log,
-                { player, packId, status ->
+                statusObserver@{ player, packId, status ->
                     val playerId = player.uniqueId
-                    val initial =
+                    val observed =
                         synchronized(deadlines) {
-                            initialDeadlines[playerId]?.takeIf { it.player === player }
-                        }
-                    initial?.let {
-                        configurationWaiter.onStatus(playerId, packId, status, it.completion)
-                    }
+                            if (stopped.get()) return@synchronized null
+                            val initial =
+                                initialDeadlines[playerId]?.takeIf { it.player === player }
+                                    ?: return@synchronized null
+                            val publishAppearance =
+                                when (status) {
+                                    PlayerResourcePackStatusEvent.Status.SUCCESSFUL -> {
+                                        if (packId != null) tracker.loaded(playerId, packId)
+                                        true
+                                    }
+                                    PlayerResourcePackStatusEvent.Status.ACCEPTED,
+                                    PlayerResourcePackStatusEvent.Status.DOWNLOADED -> false
+                                    else -> {
+                                        if (packId != null) tracker.failed(playerId, packId)
+                                        true
+                                    }
+                                }
+                            ObservedPackStatus(
+                                initial,
+                                if (publishAppearance) captureChatStyle(player) else null,
+                            )
+                        } ?: return@statusObserver
+                    observed.appearance?.let { chatStyleBridge.send(player, it) }
+                    configurationWaiter.onStatus(
+                        playerId,
+                        packId,
+                        status,
+                        observed.initial.completion,
+                    )
                 },
             )
         statusListener = listener
@@ -164,6 +225,9 @@ internal constructor(
                         previous = configurationWaiter.begin(playerId, completion)
                         replacedHandle =
                             synchronized(deadlines) {
+                                if (initialDeadlines[playerId]?.player !== event.player()) {
+                                    appearanceTracker.get()?.reset(playerId)
+                                }
                                 initialDeadlines.put(playerId, initial)?.handle
                             }
                         registered = true
@@ -192,11 +256,21 @@ internal constructor(
 
     @Subscribe
     fun onDisconnect(event: DisconnectEvent) {
-        val initial =
+        val disconnected =
             synchronized(deadlines) {
-                initialDeadlines[event.player.uniqueId]?.takeIf { it.player === event.player }
+                val initial =
+                    initialDeadlines[event.player.uniqueId]?.takeIf { it.player === event.player }
+                        ?: return@synchronized null
+                initialDeadlines.remove(event.player.uniqueId)
+                DisconnectedPlayer(
+                    initial,
+                    appearanceTracker.get()?.disconnectSnapshot(event.player.uniqueId),
+                )
             } ?: return
-        forgetInitial(initial)
+        disconnected.appearance?.let { snapshot -> chatStyleBridge.send(event.player, snapshot) }
+        disconnected.initial.handle?.close()
+        coordinator.forget(event.player.uniqueId, disconnected.initial.session)
+        configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
     }
 
     @Subscribe
@@ -210,6 +284,14 @@ internal constructor(
                 initial.completion.isDone
         )
             coordinator.onServerSwitch(event.player, initial.session)
+        if (!stopped.get()) publishChatStyle(event.player)
+    }
+
+    @Subscribe
+    fun onPluginMessage(event: PluginMessageEvent) {
+        if (event.identifier == chatStyleBridge.identifier) {
+            event.result = PluginMessageEvent.ForwardResult.handled()
+        }
     }
 
     @Subscribe
@@ -220,6 +302,9 @@ internal constructor(
         var statusToUnregister: ResourcePackStatusListener? = null
         var clientToClose: ResourcePackClient? = null
         coordinator.clear()
+        appearanceTracker.getAndSet(null)?.clear()
+        appearanceRegistry.unregister()
+        chatStyleBridge.unregister()
         snapshotDeadline.close()
         synchronized(deadlines) {
             initialDeadlines.values.forEach { it.handle?.close() }
@@ -243,6 +328,23 @@ internal constructor(
         clientToClose?.close()
         state.set(closedState())
     }
+
+    private fun publishChatStyle(player: com.velocitypowered.api.proxy.Player) {
+        val snapshot = captureChatStyle(player) ?: return
+        chatStyleBridge.send(player, snapshot)
+    }
+
+    private fun captureChatStyle(
+        player: com.velocitypowered.api.proxy.Player
+    ): PlayerChatStyleSnapshot? =
+        synchronized(deadlines) {
+            if (stopped.get()) return@synchronized null
+            if (initialDeadlines[player.uniqueId]?.player !== player) return@synchronized null
+            appearanceTracker.get()?.snapshot(player.uniqueId) {
+                appearanceProtocol(player.uniqueId) != null &&
+                    platformLookup.isBedrock(player.uniqueId) == false
+            }
+        }
 
     fun runtimeStatus(): ResourcePackRuntimeStatus {
         val value = state.get()
@@ -370,7 +472,7 @@ internal constructor(
         }
         try {
             session.player.disconnect(
-                Component.text("Resource packs are currently unavailable. Please try again.")
+                messages.render(ResourcePacksMessage.PACKS_UNAVAILABLE, session.player)
             )
         } finally {
             configurationWaiter.forget(playerId, session.completion)
@@ -398,6 +500,16 @@ internal constructor(
         var handle: AutoCloseable? = null
         var ready = false
     }
+
+    private data class ObservedPackStatus(
+        val initial: InitialDeadline,
+        val appearance: PlayerChatStyleSnapshot?,
+    )
+
+    private data class DisconnectedPlayer(
+        val initial: InitialDeadline,
+        val appearance: PlayerChatStyleSnapshot?,
+    )
 
     private companion object {
         val LOGGED_STATES =

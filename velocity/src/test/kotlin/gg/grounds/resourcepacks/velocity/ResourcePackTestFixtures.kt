@@ -181,13 +181,14 @@ internal fun releaseSnapshot(
 
 internal fun resolvedPack(
     order: Int = 1,
+    role: String = "global",
     uuid: UUID = UUID.fromString("11111111-1111-1111-1111-111111111111"),
     uri: URI = URI("https://assets.example.test/base.zip"),
     sha1: String = "1".repeat(40),
 ) =
     ResolvedPack(
         order = order,
-        role = "global",
+        role = role,
         id = "pack-$order",
         uuid = uuid,
         uri = uri,
@@ -229,6 +230,7 @@ internal fun player(
                 null
             }
             "identity" -> net.kyori.adventure.identity.Identity.identity(id)
+            "get" -> java.util.Optional.empty<Any>()
             "equals" -> proxy === args?.singleOrNull()
             "hashCode" -> id.hashCode()
             "toString" -> "TestPlayer($id)"

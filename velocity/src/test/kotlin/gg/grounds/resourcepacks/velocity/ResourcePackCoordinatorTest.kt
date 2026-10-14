@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -341,6 +342,28 @@ class ResourcePackCoordinatorTest {
         coordinator.onLogin(player)
 
         assertTrue(ownedDuringSend)
+    }
+
+    @Test
+    fun `pack ownership is bound to the current player instance`() {
+        val settings = settings()
+        val state = readyState(settings, snapshot(settings))
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val packId = UUID.fromString("11111111-1111-1111-1111-111111111111")
+        val coordinator =
+            ResourcePackCoordinator(
+                { settings },
+                { state },
+                PackSender { _, _ -> },
+                VelocityPackRequestFactory(),
+            )
+
+        coordinator.onLogin(old)
+        coordinator.onLogin(replacement)
+
+        assertFalse(coordinator.ownsPack(old, packId))
+        assertTrue(coordinator.ownsPack(replacement, packId))
     }
 
     // Break caught: provisional ownership can survive a non-Exception send failure and make a

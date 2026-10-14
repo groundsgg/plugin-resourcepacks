@@ -7,7 +7,7 @@ import java.util.UUID
 
 internal class ResourcePackStatusListener(
     private val metrics: ResourcePackMetrics,
-    private val ownsPack: (UUID, UUID?) -> Boolean,
+    private val ownsPack: (Player, UUID?) -> Boolean,
     private val targetId: (UUID, UUID?) -> String?,
     private val log: ResourcePackLog,
     private val statusObserver: (Player, UUID?, PlayerResourcePackStatusEvent.Status) -> Unit =
@@ -16,7 +16,7 @@ internal class ResourcePackStatusListener(
 ) {
     @Subscribe
     fun onStatus(event: PlayerResourcePackStatusEvent) {
-        if (!ownsPack(event.player.uniqueId, event.packId)) return
+        if (!ownsPack(event.player, event.packId)) return
         statusObserver(event.player, event.packId, event.status)
         metrics.record(event.status)
         log.info(
