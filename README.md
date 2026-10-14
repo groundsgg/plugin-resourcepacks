@@ -87,6 +87,10 @@ closes that client. Local runtime diagnostics expose client status, current and 
 fingerprints, and requested/accepted/downloaded/failed/declined counters. Untrusted diagnostic text
 is replaced by bounded, allowlisted reason codes.
 
+The required-pack unavailable disconnect reason remains localized, plain text. It is deliberately
+not a prefixed system message because the player is disconnected before normal chat presentation
+is available.
+
 ## Current scope
 
 There is no Minestom adapter and no gamemode or per-server PackSet overlay support yet.

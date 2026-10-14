@@ -11,7 +11,7 @@ class ResourcePacksMessagesTest {
         Translations.forBundle("gg.grounds.resourcepacks.messages", javaClass.classLoader)
 
     @Test
-    fun `unavailable disconnect preserves English and supports German`() {
+    fun `unavailable disconnect remains unprefixed in English and German`() {
         assertEquals(
             Component.text("Resource packs are currently unavailable. Please try again."),
             messages.render(ResourcePacksMessage.PACKS_UNAVAILABLE, Locale.ENGLISH),
