@@ -25,6 +25,11 @@ class VelocityPackRequestFactory {
             snapshot.packs.sortedBy(ResolvedPack::order).map { pack ->
                 ResourcePackInfo.resourcePackInfo(pack.uuid, pack.uri, pack.sha1)
             }
+        val packHashes =
+            snapshot.packs
+                .filter { it.role == "platform" }
+                .groupBy(ResolvedPack::uuid)
+                .mapValues { (_, packs) -> packs.map(ResolvedPack::sha1).distinct().singleOrNull() }
         return PreparedPackRequest(
             ResourcePackRequest.resourcePackRequest()
                 .packs(infos)
@@ -34,6 +39,7 @@ class VelocityPackRequestFactory {
             "${snapshot.source.cacheKey}:${snapshot.fingerprint}:${settings.required}:${settings.prompt}",
             snapshot.publication.id,
             snapshot.packs.mapTo(linkedSetOf(), ResolvedPack::uuid),
+            packHashes,
         )
     }
 
@@ -57,4 +63,5 @@ internal data class PreparedPackRequest(
     val fingerprint: String,
     val targetId: String,
     val packIds: Set<java.util.UUID>,
+    val packHashes: Map<java.util.UUID, String?>,
 )

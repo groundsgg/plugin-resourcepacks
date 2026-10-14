@@ -438,8 +438,10 @@ class AutomationContractTest {
 
     @Test
     fun `production metadata verifier rejects a mutated shaded archive`() {
-        val shadowBuild = runGradle(":velocity:shadowJar")
-        assertEquals(0, shadowBuild.exitCode, shadowBuild.output)
+        if (System.getenv("GROUNDS_GRADLE_INIT_SCRIPT").isNullOrBlank()) {
+            val shadowBuild = runGradle(":velocity:shadowJar")
+            assertEquals(0, shadowBuild.exitCode, shadowBuild.output)
+        }
 
         val archive = root.resolve("velocity/build/libs/plugin-resourcepacks-velocity.jar")
         assertTrue(archive.exists(), "shadowJar did not produce $archive")
@@ -500,9 +502,18 @@ class AutomationContractTest {
 
     private fun runGradle(vararg arguments: String): GradleRun {
         val outputFile = Files.createTempFile(tempDir, "gradle-", ".log")
+        val initScript =
+            System.getenv("GROUNDS_GRADLE_INIT_SCRIPT")?.takeIf(String::isNotBlank)?.let(Path::of)
+        if (initScript != null) {
+            require(Files.isRegularFile(initScript)) {
+                "GROUNDS_GRADLE_INIT_SCRIPT must name an existing regular file"
+            }
+        }
+        val compositeArguments = initScript?.let { listOf("-I", it.toString()) }.orEmpty()
         val process =
             ProcessBuilder(
                     listOf(root.resolve("gradlew").toString(), "--no-daemon", "--offline") +
+                        compositeArguments +
                         arguments
                 )
                 .directory(root.toFile())

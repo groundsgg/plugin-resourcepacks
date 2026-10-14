@@ -190,6 +190,14 @@ internal class ResourcePackCoordinator(
                     targetAttributions.containsKey(PlayerPack(playerId, packId)))
         }
 
+    internal fun ownsPack(player: Player, packId: UUID?): Boolean =
+        synchronized(delivery) {
+            val current =
+                pendingInitial[player.uniqueId]?.player
+                    ?: initiallyCompleted[player.uniqueId]?.player
+            current === player && ownsPack(player.uniqueId, packId)
+        }
+
     internal fun clear() =
         synchronized(delivery) {
             closed = true

@@ -83,6 +83,9 @@ subprojects {
                             check("\"id\":\"plugin-config\",\"optional\":false" in metadata) {
                                 "plugin metadata must require plugin-config"
                             }
+                            check("\"id\":\"plugin-proxy\",\"optional\":false" in metadata) {
+                                "plugin metadata must require plugin-proxy"
+                            }
                         }
                     }
                 }
