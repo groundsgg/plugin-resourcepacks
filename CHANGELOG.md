@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.0.0...v1.1.0) (2026-10-14)
+
+
+### Features
+
+* **chat:** unify localized resourcepacks messages ([#31](https://github.com/groundsgg/plugin-resourcepacks/issues/31)) ([90959a3](https://github.com/groundsgg/plugin-resourcepacks/commit/90959a3808563bba116ce7110a47acaa4f090ab4))
+
 ## [1.0.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v0.2.0...v1.0.0) (2026-10-06)
 
 
