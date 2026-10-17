@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.0...v1.1.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **chat:** consume the shared system layout with updated locks ([#33](https://github.com/groundsgg/plugin-resourcepacks/issues/33)) ([a05c753](https://github.com/groundsgg/plugin-resourcepacks/commit/a05c753bacff8ee4166b02564962e998d6ff9508))
+
 ## [1.1.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.0.0...v1.1.0) (2026-10-14)
 
 
