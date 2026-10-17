@@ -7,7 +7,7 @@ configure<BuildConfigExtension> { packageName("gg.grounds.generated") }
 dependencies {
     compileOnly("gg.grounds:plugin-config-common:1.0.0")
     compileOnly("gg.grounds:plugin-proxy-api:2.6.0")
-    implementation("gg.grounds:library-i18n:0.4.0")
+    implementation("gg.grounds:library-i18n:0.4.3")
     compileOnly("gg.grounds:plugin-config-velocity:1.0.0") {
         attributes {
             attribute(
