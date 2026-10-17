@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.1...v1.1.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* **chat:** align context and message-level colors ([#35](https://github.com/groundsgg/plugin-resourcepacks/issues/35)) ([d2bb107](https://github.com/groundsgg/plugin-resourcepacks/commit/d2bb1075934b377370b390cbe2519ba7a03d588f))
+
 ## [1.1.1](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.0...v1.1.1) (2026-10-17)
 
 
