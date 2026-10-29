@@ -61,6 +61,8 @@ internal constructor(
     private val platformLookup: ChatPlatformLookup = ChatPlatformLookup { null },
     private val appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
     private val chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+    private val sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+    private val sidebarProtocol: (java.util.UUID) -> Int? = { appearanceProtocol(it)?.protocol },
 ) {
     @Inject
     constructor(
@@ -85,6 +87,12 @@ internal constructor(
                 registerChannel = { proxy.channelRegistrar.register(it) },
                 unregisterChannel = { proxy.channelRegistrar.unregister(it) },
             ),
+        sidebarStyleBridge =
+            VelocityPlayerChatStyleBridge(
+                registerChannel = { proxy.channelRegistrar.register(it) },
+                unregisterChannel = { proxy.channelRegistrar.unregister(it) },
+                channelId = SidebarAppearanceEnvironment.CHANNEL,
+            ),
     )
 
     private val lifecycle = Any()
@@ -96,6 +104,7 @@ internal constructor(
     private val lastLoggedStatus = AtomicReference<PackSetClientStatus?>(null)
     private val configurationWaiter = ResourcePackConfigurationWaiter()
     private val appearanceTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
+    private val sidebarTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val messages =
         Translations.forBundle("gg.grounds.resourcepacks.messages", javaClass.classLoader)
     private val deadlines = Any()
@@ -113,6 +122,7 @@ internal constructor(
             deliveryObserver =
                 ResourcePackDeliveryObserver { player, prepared ->
                     appearanceTracker.get()?.offered(player.uniqueId, prepared.packHashes)
+                    sidebarTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     publishChatStyle(player)
                     log.info(
                         "Resource-pack request sent (playerId=${player.uniqueId}, " +
@@ -139,10 +149,14 @@ internal constructor(
         val tracker =
             PlayerChatAppearanceTracker(ChatAppearanceEnvironment.from(deployment).fontPackSha1s)
         appearanceTracker.set(tracker)
+        sidebarTracker.set(
+            PlayerChatAppearanceTracker(SidebarAppearanceEnvironment.from(deployment))
+        )
         appearanceRegistry.register(
             ResourcePackPlayerChatAppearanceQuery(appearanceProtocol, platformLookup, tracker)
         )
         chatStyleBridge.register()
+        sidebarStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
         val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
@@ -162,13 +176,19 @@ internal constructor(
                             val publishAppearance =
                                 when (status) {
                                     PlayerResourcePackStatusEvent.Status.SUCCESSFUL -> {
-                                        if (packId != null) tracker.loaded(playerId, packId)
+                                        if (packId != null) {
+                                            tracker.loaded(playerId, packId)
+                                            sidebarTracker.get()?.loaded(playerId, packId)
+                                        }
                                         true
                                     }
                                     PlayerResourcePackStatusEvent.Status.ACCEPTED,
                                     PlayerResourcePackStatusEvent.Status.DOWNLOADED -> false
                                     else -> {
-                                        if (packId != null) tracker.failed(playerId, packId)
+                                        if (packId != null) {
+                                            tracker.failed(playerId, packId)
+                                            sidebarTracker.get()?.failed(playerId, packId)
+                                        }
                                         true
                                     }
                                 }
@@ -178,6 +198,7 @@ internal constructor(
                             )
                         } ?: return@statusObserver
                     observed.appearance?.let { chatStyleBridge.send(player, it) }
+                    publishSidebarStyle(player)
                     configurationWaiter.onStatus(
                         playerId,
                         packId,
@@ -227,6 +248,7 @@ internal constructor(
                             synchronized(deadlines) {
                                 if (initialDeadlines[playerId]?.player !== event.player()) {
                                     appearanceTracker.get()?.reset(playerId)
+                                    sidebarTracker.get()?.reset(playerId)
                                 }
                                 initialDeadlines.put(playerId, initial)?.handle
                             }
@@ -265,9 +287,11 @@ internal constructor(
                 DisconnectedPlayer(
                     initial,
                     appearanceTracker.get()?.disconnectSnapshot(event.player.uniqueId),
+                    sidebarTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                 )
             } ?: return
         disconnected.appearance?.let { snapshot -> chatStyleBridge.send(event.player, snapshot) }
+        disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
         disconnected.initial.handle?.close()
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
         configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
@@ -289,7 +313,10 @@ internal constructor(
 
     @Subscribe
     fun onPluginMessage(event: PluginMessageEvent) {
-        if (event.identifier == chatStyleBridge.identifier) {
+        if (
+            event.identifier == chatStyleBridge.identifier ||
+                event.identifier == sidebarStyleBridge.identifier
+        ) {
             event.result = PluginMessageEvent.ForwardResult.handled()
         }
     }
@@ -303,8 +330,10 @@ internal constructor(
         var clientToClose: ResourcePackClient? = null
         coordinator.clear()
         appearanceTracker.getAndSet(null)?.clear()
+        sidebarTracker.getAndSet(null)?.clear()
         appearanceRegistry.unregister()
         chatStyleBridge.unregister()
+        sidebarStyleBridge.unregister()
         snapshotDeadline.close()
         synchronized(deadlines) {
             initialDeadlines.values.forEach { it.handle?.close() }
@@ -332,6 +361,22 @@ internal constructor(
     private fun publishChatStyle(player: com.velocitypowered.api.proxy.Player) {
         val snapshot = captureChatStyle(player) ?: return
         chatStyleBridge.send(player, snapshot)
+        publishSidebarStyle(player)
+    }
+
+    private fun publishSidebarStyle(player: com.velocitypowered.api.proxy.Player) {
+        val snapshot =
+            synchronized(deadlines) {
+                if (stopped.get() || initialDeadlines[player.uniqueId]?.player !== player)
+                    return@synchronized null
+                sidebarTracker.get()?.snapshot(player.uniqueId) {
+                    SidebarAppearanceEnvironment.eligible(
+                        sidebarProtocol(player.uniqueId),
+                        platformLookup.isBedrock(player.uniqueId),
+                    )
+                }
+            } ?: return
+        sidebarStyleBridge.send(player, snapshot)
     }
 
     private fun captureChatStyle(
@@ -509,6 +554,7 @@ internal constructor(
     private data class DisconnectedPlayer(
         val initial: InitialDeadline,
         val appearance: PlayerChatStyleSnapshot?,
+        val sidebarAppearance: PlayerChatStyleSnapshot?,
     )
 
     private companion object {

@@ -1394,6 +1394,56 @@ class GroundsResourcePacksPluginTest {
         assertEquals(1, continuation.resumes)
     }
 
+    @Test
+    fun `disconnect cannot clear sidebar readiness established by a replacement connection`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val sidebar = RecordingPlayerChatStyleBridge()
+        var onChatSend: () -> Unit = {}
+        val chat =
+            object : PlayerChatStyleBridge by NoopPlayerChatStyleBridge {
+                override fun send(player: Player, snapshot: PlayerChatStyleSnapshot) = onChatSend()
+            }
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "SIDEBAR_FONT_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                sidebarProtocol = { 777 },
+                platformLookup = ChatPlatformLookup { false },
+                chatStyleBridge = chat,
+                sidebarStyleBridge = sidebar,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null))
+        terminalStatus(events, old)
+        assertTrue(sidebar.snapshots.last().second.ready)
+        onChatSend = {
+            onChatSend = {}
+            plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+            terminalStatus(events, replacement)
+        }
+        plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        plugin.onServerPostConnect(ServerPostConnectEvent(replacement, null))
+        assertTrue(sidebar.snapshots.last().second.ready)
+    }
+
     private fun terminalStatus(events: FakeEventRegistry, player: Player) {
         packStatus(events, player, PlayerResourcePackStatusEvent.Status.SUCCESSFUL)
     }
@@ -1648,6 +1698,8 @@ class GroundsResourcePacksPluginTest {
         platformLookup: ChatPlatformLookup = ChatPlatformLookup { null },
         appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
         chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+        sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+        sidebarProtocol: (UUID) -> Int? = { appearanceProtocol(it)?.protocol },
     ) =
         GroundsResourcePacksPlugin(
             dataDirectory = directory,
@@ -1662,6 +1714,8 @@ class GroundsResourcePacksPluginTest {
             platformLookup = platformLookup,
             appearanceRegistry = appearanceRegistry,
             chatStyleBridge = chatStyleBridge,
+            sidebarStyleBridge = sidebarStyleBridge,
+            sidebarProtocol = sidebarProtocol,
         )
 
     private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
