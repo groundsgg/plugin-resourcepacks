@@ -94,3 +94,21 @@ is available.
 ## Current scope
 
 There is no Minestom adapter and no gamemode or per-server PackSet overlay support yet.
+
+## Sidebar font confirmation
+
+`SIDEBAR_FONT_PACK_SHA1S` is a comma-separated allowlist of lowercase SHA-1 hashes
+for platform packs carrying the new `grounds:sidebar` font. It is independent of
+`CHAT_FONT_PACK_SHA1S`; an old chat-font pack never enables sidebar glyphs. With
+no sidebar allowlist the lobby stays in readable text mode.
+
+Only a successful load of an offered, allowlisted pack on Java protocol 777,
+with a positively identified non-Bedrock player, sets readiness. A replacement
+offer, load failure or disconnect revokes it. The revisioned, UUID-bound status
+is sent on `grounds:sidebar_style` to the player's actual current backend and
+resent after switching servers. Incoming client messages on this channel are
+consumed; they cannot enable graphics.
+
+The backend must include the matching lobby receiver. Roll out the new pack
+and allowlisted hash, the proxy sender on every proxy, then the new lobby.
+An old receiver or sender continues to use text.

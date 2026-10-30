@@ -42,12 +42,12 @@ internal class VelocityPlayerChatStyleBridge(
     private val currentServer: (Player) -> ServerConnection? = { player ->
         player.currentServer.orElse(null)
     },
+    channelId: String = PlayerChatStylePayload.CHANNEL,
 ) : PlayerChatStyleBridge {
     private val lifecycle = Any()
     private var active = false
 
-    override val identifier: ChannelIdentifier =
-        MinecraftChannelIdentifier.from(PlayerChatStylePayload.CHANNEL)
+    override val identifier: ChannelIdentifier = MinecraftChannelIdentifier.from(channelId)
 
     override fun register() {
         synchronized(lifecycle) {
