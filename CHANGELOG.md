@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.2...v1.2.0) (2026-10-30)
+
+
+### Features
+
+* **sidebar:** bridge verified font readiness to lobby ([#37](https://github.com/groundsgg/plugin-resourcepacks/issues/37)) ([aef824f](https://github.com/groundsgg/plugin-resourcepacks/commit/aef824f918e60cc367531a6e5012aa4ad813cc54))
+
 ## [1.1.2](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.1...v1.1.2) (2026-10-17)
 
 
