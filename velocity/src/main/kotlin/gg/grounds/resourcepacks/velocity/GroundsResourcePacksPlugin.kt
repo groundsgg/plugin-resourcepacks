@@ -85,7 +85,16 @@ internal constructor(
         platformLookup = FloodgateChatPlatformLookup.create(logger),
         appearanceRegistry = ProxyPlayerChatAppearanceRegistry,
         hudRegistry = ProxyPlayerHudAppearanceRegistry,
-        appliedHashes = { id -> proxy.getPlayer(id).orElse(null)?.appliedResourcePacks?.mapNotNull { pack -> pack.hash?.joinToString("") { "%02x".format(it.toInt() and 255) } }?.toSet() ?: emptySet() },
+        appliedHashes = { id ->
+            proxy
+                .getPlayer(id)
+                .orElse(null)
+                ?.appliedResourcePacks
+                ?.mapNotNull { pack ->
+                    pack.hash?.joinToString("") { "%02x".format(it.toInt() and 255) }
+                }
+                ?.toSet() ?: emptySet()
+        },
         chatStyleBridge =
             VelocityPlayerChatStyleBridge(
                 registerChannel = { proxy.channelRegistrar.register(it) },
@@ -140,7 +149,8 @@ internal constructor(
                 ResourcePackDeliveryExpectation { player, prepared ->
                     configurationWaiter.expect(player.uniqueId, prepared.packIds)
                 },
-            initialDeliveryCompleted = InitialPackDeliveryCompletion(::completeInitialConfiguration),
+            initialDeliveryCompleted =
+                InitialPackDeliveryCompletion(::completeInitialConfiguration),
         )
 
     private var client: ResourcePackClient? = null
@@ -164,7 +174,15 @@ internal constructor(
         val hudHashes = HudAppearanceEnvironment.from(deployment)
         val hud = PlayerChatAppearanceTracker(hudHashes)
         hudTracker.set(hud)
-        hudRegistry.register(ResourcePackPlayerHudAppearanceQuery(hud, hudHashes, sidebarProtocol, platformLookup, appliedHashes))
+        hudRegistry.register(
+            ResourcePackPlayerHudAppearanceQuery(
+                hud,
+                hudHashes,
+                sidebarProtocol,
+                platformLookup,
+                appliedHashes,
+            )
+        )
         chatStyleBridge.register()
         sidebarStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
@@ -297,6 +315,7 @@ internal constructor(
                     initialDeadlines[event.player.uniqueId]?.takeIf { it.player === event.player }
                         ?: return@synchronized null
                 initialDeadlines.remove(event.player.uniqueId)
+                hudTracker.get()?.forget(event.player.uniqueId)
                 DisconnectedPlayer(
                     initial,
                     appearanceTracker.get()?.disconnectSnapshot(event.player.uniqueId),
@@ -305,7 +324,6 @@ internal constructor(
             } ?: return
         disconnected.appearance?.let { snapshot -> chatStyleBridge.send(event.player, snapshot) }
         disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
-        hudTracker.get()?.forget(event.player.uniqueId)
         disconnected.initial.handle?.close()
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
         configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
@@ -502,8 +520,9 @@ internal constructor(
     }
 
     private fun scheduleSnapshotDeadline(session: InitialDeadline) {
-        val handle =
-            snapshotDeadline.schedule { expireInitialDelivery(session.player.uniqueId, session) }
+        val handle = snapshotDeadline.schedule {
+            expireInitialDelivery(session.player.uniqueId, session)
+        }
         synchronized(deadlines) {
             if (
                 initialDeadlines[session.player.uniqueId] === session &&

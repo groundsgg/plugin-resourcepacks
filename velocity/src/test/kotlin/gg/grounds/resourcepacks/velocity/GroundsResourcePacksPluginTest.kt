@@ -1684,6 +1684,39 @@ class GroundsResourcePacksPluginTest {
         }
     }
 
+    @Test fun `reentrant reconnect during disconnect cannot clear the new HUD session`() {
+        val initial=settings();val clients=FakeClientFactory();val events=FakeEventRegistry()
+        val old=player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement=player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        lateinit var instance:GroundsResourcePacksPlugin
+        var query:gg.grounds.proxy.api.PlayerHudAppearanceQuery?=null
+        var reconnect=false
+        val registry=object:PlayerHudAppearanceRegistry {
+            override fun register(value:gg.grounds.proxy.api.PlayerHudAppearanceQuery){query=value}
+            override fun unregister() { query=null }
+        }
+        val bridge=object:PlayerChatStyleBridge by NoopPlayerChatStyleBridge {
+            override fun send(player:Player,snapshot:PlayerChatStyleSnapshot) {
+                if(reconnect && player===old && !snapshot.ready) {
+                    reconnect=false
+                    instance.onPlayerConfiguration(PlayerConfigurationEvent(replacement,null))
+                    terminalStatus(events,replacement)
+                }
+            }
+        }
+        instance=plugin(FakeConfigGateway(ConfigRegistrationResult.ready(),initial),clients,events=events,
+            environment=mapOf("GROUNDS_ENVIRONMENT" to "stage","HUD_FONT_PACK_SHA1S" to "1".repeat(40)),
+            platformLookup=ChatPlatformLookup{false},sidebarProtocol={777},hudRegistry=registry,appliedHashes={setOf("1".repeat(40))},chatStyleBridge=bridge)
+        instance.onInitialize(ProxyInitializeEvent())
+        clients.created.single().emit(readyState(initial,snapshot(initial,packs=listOf(resolvedPack(role="platform")))))
+        instance.onPlayerConfiguration(PlayerConfigurationEvent(old,null));terminalStatus(events,old)
+        assertTrue(query!!.appearanceOf(old.uniqueId).ready)
+        reconnect=true
+        instance.onDisconnect(DisconnectEvent(old,DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        assertTrue(query!!.appearanceOf(replacement.uniqueId).ready)
+        instance.onShutdown(ProxyShutdownEvent())
+    }
+
     private fun plugin(
         gateway: ResourcePackConfigGateway,
         clients: FakeClientFactory,
@@ -1700,6 +1733,8 @@ class GroundsResourcePacksPluginTest {
         chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         sidebarProtocol: (UUID) -> Int? = { appearanceProtocol(it)?.protocol },
+        hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
+        appliedHashes: (UUID) -> Set<String> = { emptySet() },
     ) =
         GroundsResourcePacksPlugin(
             dataDirectory = directory,
@@ -1716,6 +1751,8 @@ class GroundsResourcePacksPluginTest {
             chatStyleBridge = chatStyleBridge,
             sidebarStyleBridge = sidebarStyleBridge,
             sidebarProtocol = sidebarProtocol,
+            hudRegistry = hudRegistry,
+            appliedHashes = appliedHashes,
         )
 
     private fun fireSubscribed(plugin: GroundsResourcePacksPlugin, event: Any) {
