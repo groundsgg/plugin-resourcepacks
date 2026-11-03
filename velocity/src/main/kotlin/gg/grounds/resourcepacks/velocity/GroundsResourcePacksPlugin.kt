@@ -63,6 +63,8 @@ internal constructor(
     private val chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val sidebarProtocol: (java.util.UUID) -> Int? = { appearanceProtocol(it)?.protocol },
+    private val hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
+    private val appliedHashes: (java.util.UUID) -> Set<String> = { emptySet() },
 ) {
     @Inject
     constructor(
@@ -82,6 +84,8 @@ internal constructor(
         },
         platformLookup = FloodgateChatPlatformLookup.create(logger),
         appearanceRegistry = ProxyPlayerChatAppearanceRegistry,
+        hudRegistry = ProxyPlayerHudAppearanceRegistry,
+        appliedHashes = { id -> proxy.getPlayer(id).orElse(null)?.appliedResourcePacks?.mapNotNull { pack -> pack.hash?.joinToString("") { "%02x".format(it.toInt() and 255) } }?.toSet() ?: emptySet() },
         chatStyleBridge =
             VelocityPlayerChatStyleBridge(
                 registerChannel = { proxy.channelRegistrar.register(it) },
@@ -105,6 +109,7 @@ internal constructor(
     private val configurationWaiter = ResourcePackConfigurationWaiter()
     private val appearanceTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val sidebarTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
+    private val hudTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val messages =
         Translations.forBundle("gg.grounds.resourcepacks.messages", javaClass.classLoader)
     private val deadlines = Any()
@@ -123,6 +128,7 @@ internal constructor(
                 ResourcePackDeliveryObserver { player, prepared ->
                     appearanceTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     sidebarTracker.get()?.offered(player.uniqueId, prepared.packHashes)
+                    hudTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     publishChatStyle(player)
                     log.info(
                         "Resource-pack request sent (playerId=${player.uniqueId}, " +
@@ -155,6 +161,10 @@ internal constructor(
         appearanceRegistry.register(
             ResourcePackPlayerChatAppearanceQuery(appearanceProtocol, platformLookup, tracker)
         )
+        val hudHashes = HudAppearanceEnvironment.from(deployment)
+        val hud = PlayerChatAppearanceTracker(hudHashes)
+        hudTracker.set(hud)
+        hudRegistry.register(ResourcePackPlayerHudAppearanceQuery(hud, hudHashes, sidebarProtocol, platformLookup, appliedHashes))
         chatStyleBridge.register()
         sidebarStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
@@ -179,6 +189,7 @@ internal constructor(
                                         if (packId != null) {
                                             tracker.loaded(playerId, packId)
                                             sidebarTracker.get()?.loaded(playerId, packId)
+                                            hudTracker.get()?.loaded(playerId, packId)
                                         }
                                         true
                                     }
@@ -188,6 +199,7 @@ internal constructor(
                                         if (packId != null) {
                                             tracker.failed(playerId, packId)
                                             sidebarTracker.get()?.failed(playerId, packId)
+                                            hudTracker.get()?.failed(playerId, packId)
                                         }
                                         true
                                     }
@@ -249,6 +261,7 @@ internal constructor(
                                 if (initialDeadlines[playerId]?.player !== event.player()) {
                                     appearanceTracker.get()?.reset(playerId)
                                     sidebarTracker.get()?.reset(playerId)
+                                    hudTracker.get()?.reset(playerId)
                                 }
                                 initialDeadlines.put(playerId, initial)?.handle
                             }
@@ -292,6 +305,7 @@ internal constructor(
             } ?: return
         disconnected.appearance?.let { snapshot -> chatStyleBridge.send(event.player, snapshot) }
         disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
+        hudTracker.get()?.forget(event.player.uniqueId)
         disconnected.initial.handle?.close()
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
         configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
@@ -331,6 +345,8 @@ internal constructor(
         coordinator.clear()
         appearanceTracker.getAndSet(null)?.clear()
         sidebarTracker.getAndSet(null)?.clear()
+        hudTracker.getAndSet(null)?.clear()
+        hudRegistry.unregister()
         appearanceRegistry.unregister()
         chatStyleBridge.unregister()
         sidebarStyleBridge.unregister()
