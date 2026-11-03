@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.2.0...v1.3.0) (2026-11-03)
+
+
+### Features
+
+* verify loaded HUD font packs per player session ([#39](https://github.com/groundsgg/plugin-resourcepacks/issues/39)) ([28f616f](https://github.com/groundsgg/plugin-resourcepacks/commit/28f616fa59f6102c7dd9ffa100ffc296739ecfd4))
+
 ## [1.2.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.2...v1.2.0) (2026-10-30)
 
 
