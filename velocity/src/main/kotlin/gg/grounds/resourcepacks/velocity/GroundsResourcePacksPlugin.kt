@@ -149,8 +149,7 @@ internal constructor(
                 ResourcePackDeliveryExpectation { player, prepared ->
                     configurationWaiter.expect(player.uniqueId, prepared.packIds)
                 },
-            initialDeliveryCompleted =
-                InitialPackDeliveryCompletion(::completeInitialConfiguration),
+            initialDeliveryCompleted = InitialPackDeliveryCompletion(::completeInitialConfiguration),
         )
 
     private var client: ResourcePackClient? = null
@@ -520,9 +519,8 @@ internal constructor(
     }
 
     private fun scheduleSnapshotDeadline(session: InitialDeadline) {
-        val handle = snapshotDeadline.schedule {
-            expireInitialDelivery(session.player.uniqueId, session)
-        }
+        val handle =
+            snapshotDeadline.schedule { expireInitialDelivery(session.player.uniqueId, session) }
         synchronized(deadlines) {
             if (
                 initialDeadlines[session.player.uniqueId] === session &&
