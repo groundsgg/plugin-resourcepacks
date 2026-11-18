@@ -95,6 +95,35 @@ class PlayerChatStyleBridgeTest {
     }
 
     @Test
+    fun `server closing during send is ignored while other transport failures propagate`() {
+        val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        var failure = IllegalStateException("Not connected to server!")
+        var attempts = 0
+        val server =
+            Proxy.newProxyInstance(
+                ServerConnection::class.java.classLoader,
+                arrayOf(ServerConnection::class.java),
+            ) { _, method, _ ->
+                if (method.name == "sendPluginMessage") {
+                    attempts++
+                    throw failure
+                }
+                defaultValue(method.returnType)
+            } as ServerConnection
+        val bridge = VelocityPlayerChatStyleBridge({}, {}, { server })
+        bridge.register()
+        bridge.send(player, PlayerChatStyleSnapshot(1, false))
+        failure = IllegalStateException("unexpected transport failure")
+        assertEquals(
+            failure,
+            assertFailsWith<IllegalStateException> {
+                bridge.send(player, PlayerChatStyleSnapshot(2, false))
+            },
+        )
+        assertEquals(2, attempts)
+    }
+
+    @Test
     fun `transport skips absent server and encodes a fresh player bound snapshot`() {
         val player = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         val packets = mutableListOf<ByteArray>()

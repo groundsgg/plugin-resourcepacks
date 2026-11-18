@@ -221,19 +221,20 @@ internal constructor(
                                         true
                                     }
                                 }
-                            ObservedPackStatus(
-                                initial,
-                                if (publishAppearance) captureChatStyle(player) else null,
-                            )
+                            ObservedPackStatus(initial, publishAppearance)
                         } ?: return@statusObserver
-                    observed.appearance?.let { chatStyleBridge.send(player, it) }
-                    publishSidebarStyle(player)
-                    configurationWaiter.onStatus(
-                        playerId,
-                        packId,
-                        status,
-                        observed.initial.completion,
-                    )
+                    try {
+                        if (observed.publishAppearance)
+                            captureChatStyle(player)?.let { chatStyleBridge.send(player, it) }
+                        publishSidebarStyle(player)
+                    } finally {
+                        configurationWaiter.onStatus(
+                            playerId,
+                            packId,
+                            status,
+                            observed.initial.completion,
+                        )
+                    }
                 },
             )
         statusListener = listener
@@ -321,11 +322,14 @@ internal constructor(
                     sidebarTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                 )
             } ?: return
-        disconnected.appearance?.let { snapshot -> chatStyleBridge.send(event.player, snapshot) }
-        disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
-        disconnected.initial.handle?.close()
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
-        configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
+        try {
+            disconnected.initial.handle?.close()
+        } finally {
+            configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
+        }
+        disconnected.appearance?.let { chatStyleBridge.send(event.player, it) }
+        disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
     }
 
     @Subscribe
@@ -581,7 +585,7 @@ internal constructor(
 
     private data class ObservedPackStatus(
         val initial: InitialDeadline,
-        val appearance: PlayerChatStyleSnapshot?,
+        val publishAppearance: Boolean,
     )
 
     private data class DisconnectedPlayer(

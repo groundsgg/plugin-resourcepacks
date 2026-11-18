@@ -1444,6 +1444,91 @@ class GroundsResourcePacksPluginTest {
         assertTrue(sidebar.snapshots.last().second.ready)
     }
 
+    @Test
+    fun `terminal status completes despite a chat style failure`() =
+        styleFailure(terminal = true, chat = true)
+
+    @Test
+    fun `terminal status completes despite a sidebar style failure`() =
+        styleFailure(terminal = true, chat = false)
+
+    @Test
+    fun `disconnect clears pending configuration despite a chat style failure`() =
+        styleFailure(terminal = false, chat = true)
+
+    @Test
+    fun `disconnect clears pending configuration despite a sidebar style failure`() =
+        styleFailure(terminal = false, chat = false)
+
+    private fun styleFailure(terminal: Boolean, chat: Boolean) {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val deadline = FakeSnapshotDeadline()
+        val original = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player(original.uniqueId.toString())
+        var failing = false
+        val sentTo = mutableListOf<Player>()
+        val expected = IllegalStateException("unexpected style failure")
+        val bridge =
+            object : PlayerChatStyleBridge by NoopPlayerChatStyleBridge {
+                override fun send(player: Player, snapshot: PlayerChatStyleSnapshot) {
+                    if (failing && player === original) throw expected
+                }
+            }
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                events = events,
+                deadline = deadline,
+                sender = PackSender { player, _ -> sentTo += player },
+                chatStyleBridge = if (chat) bridge else NoopPlayerChatStyleBridge,
+                sidebarStyleBridge = if (chat) NoopPlayerChatStyleBridge else bridge,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        try {
+            fun configure(player: Player): RecordingContinuation {
+                val continuation = RecordingContinuation()
+                requireNotNull(plugin.onPlayerConfiguration(PlayerConfigurationEvent(player, null)))
+                    .execute(continuation)
+                return continuation
+            }
+            val packs = readyState(initial, snapshot(initial))
+            if (terminal) clients.created.single().emit(packs)
+            val oldTask = configure(original)
+            assertEquals(0, oldTask.resumes)
+            failing = true
+            assertSame(
+                expected,
+                assertFailsWith<IllegalStateException> {
+                    if (terminal) terminalStatus(events, original)
+                    else
+                        plugin.onDisconnect(
+                            DisconnectEvent(original, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN)
+                        )
+                },
+            )
+            assertEquals(1, oldTask.resumes)
+            if (!terminal) {
+                assertTrue(deadline.entries.single().cancelled)
+                clients.created.single().emit(packs)
+                assertTrue(sentTo.isEmpty(), "late snapshot sent a pack to a disconnected player")
+            }
+            val newTask = configure(replacement)
+            terminalStatus(events, original)
+            plugin.onDisconnect(
+                DisconnectEvent(original, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN)
+            )
+            assertEquals(0, newTask.resumes)
+            terminalStatus(events, replacement)
+            assertEquals(1, newTask.resumes)
+            assertEquals(1, oldTask.resumes)
+        } finally {
+            plugin.onShutdown(ProxyShutdownEvent())
+        }
+    }
+
     private fun terminalStatus(events: FakeEventRegistry, player: Player) {
         packStatus(events, player, PlayerResourcePackStatusEvent.Status.SUCCESSFUL)
     }
