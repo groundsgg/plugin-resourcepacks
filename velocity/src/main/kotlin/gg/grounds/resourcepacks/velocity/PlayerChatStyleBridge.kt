@@ -69,10 +69,13 @@ internal class VelocityPlayerChatStyleBridge(
         synchronized(lifecycle) {
             if (!active) return
             val server = currentServer(player) ?: return
-            server.sendPluginMessage(
-                identifier,
-                PlayerChatStylePayload.encode(player.uniqueId, snapshot),
-            )
+            val payload = PlayerChatStylePayload.encode(player.uniqueId, snapshot)
+            try {
+                server.sendPluginMessage(identifier, payload)
+            } catch (closed: IllegalStateException) {
+                // Velocity can retain the backend reference after its channel has closed.
+                if (closed.message != "Not connected to server!") throw closed
+            }
         }
     }
 }
