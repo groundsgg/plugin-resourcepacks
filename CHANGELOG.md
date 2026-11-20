@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.2.0...v1.3.0) (2026-11-20)
+
+
+### Features
+
+* **resourcepacks:** confirm pinned dialogue assets to backends ([#42](https://github.com/groundsgg/plugin-resourcepacks/issues/42)) ([2034f1d](https://github.com/groundsgg/plugin-resourcepacks/commit/2034f1dcf1a6291cc5fad20cec52b96a92ddc9b6))
+* verify loaded HUD font packs per player session ([#39](https://github.com/groundsgg/plugin-resourcepacks/issues/39)) ([28f616f](https://github.com/groundsgg/plugin-resourcepacks/commit/28f616fa59f6102c7dd9ffa100ffc296739ecfd4))
+
+
+### Bug Fixes
+
+* **resourcepacks:** complete sessions when style delivery fails ([#41](https://github.com/groundsgg/plugin-resourcepacks/issues/41)) ([4606ff3](https://github.com/groundsgg/plugin-resourcepacks/commit/4606ff3ca646e8efdcfa64ff6003a9db23d295e3))
+
 ## [1.2.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.1.2...v1.2.0) (2026-10-30)
 
 
