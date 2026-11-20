@@ -43,6 +43,8 @@ internal class VelocityPlayerChatStyleBridge(
         player.currentServer.orElse(null)
     },
     channelId: String = PlayerChatStylePayload.CHANNEL,
+    private val encode: (UUID, PlayerChatStyleSnapshot) -> ByteArray =
+        PlayerChatStylePayload::encode,
 ) : PlayerChatStyleBridge {
     private val lifecycle = Any()
     private var active = false
@@ -69,7 +71,7 @@ internal class VelocityPlayerChatStyleBridge(
         synchronized(lifecycle) {
             if (!active) return
             val server = currentServer(player) ?: return
-            val payload = PlayerChatStylePayload.encode(player.uniqueId, snapshot)
+            val payload = encode(player.uniqueId, snapshot)
             try {
                 server.sendPluginMessage(identifier, payload)
             } catch (closed: IllegalStateException) {
