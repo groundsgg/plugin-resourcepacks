@@ -62,6 +62,7 @@ internal constructor(
     private val appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
     private val chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+    private val dialogueStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val sidebarProtocol: (java.util.UUID) -> Int? = { appearanceProtocol(it)?.protocol },
     private val hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
     private val appliedHashes: (java.util.UUID) -> Set<String> = { emptySet() },
@@ -100,6 +101,19 @@ internal constructor(
                 registerChannel = { proxy.channelRegistrar.register(it) },
                 unregisterChannel = { proxy.channelRegistrar.unregister(it) },
             ),
+        dialogueStyleBridge =
+            VelocityPlayerChatStyleBridge(
+                registerChannel = { proxy.channelRegistrar.register(it) },
+                unregisterChannel = { proxy.channelRegistrar.unregister(it) },
+                channelId = DialogueAppearanceEnvironment.CHANNEL,
+                encode = { id, snapshot ->
+                    DialoguePackPayload.encode(
+                        id,
+                        snapshot,
+                        DialogueAppearanceEnvironment.from(System.getenv()).assetPin,
+                    )
+                },
+            ),
         sidebarStyleBridge =
             VelocityPlayerChatStyleBridge(
                 registerChannel = { proxy.channelRegistrar.register(it) },
@@ -117,6 +131,7 @@ internal constructor(
     private val lastLoggedStatus = AtomicReference<PackSetClientStatus?>(null)
     private val configurationWaiter = ResourcePackConfigurationWaiter()
     private val appearanceTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
+    private val dialogueTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val sidebarTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val hudTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val messages =
@@ -137,6 +152,7 @@ internal constructor(
                 ResourcePackDeliveryObserver { player, prepared ->
                     appearanceTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     sidebarTracker.get()?.offered(player.uniqueId, prepared.packHashes)
+                    dialogueTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     hudTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     publishChatStyle(player)
                     log.info(
@@ -164,6 +180,9 @@ internal constructor(
         val tracker =
             PlayerChatAppearanceTracker(ChatAppearanceEnvironment.from(deployment).fontPackSha1s)
         appearanceTracker.set(tracker)
+        dialogueTracker.set(
+            PlayerChatAppearanceTracker(DialogueAppearanceEnvironment.from(deployment).hashes)
+        )
         sidebarTracker.set(
             PlayerChatAppearanceTracker(SidebarAppearanceEnvironment.from(deployment))
         )
@@ -184,6 +203,7 @@ internal constructor(
         )
         chatStyleBridge.register()
         sidebarStyleBridge.register()
+        dialogueStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
         val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
@@ -206,6 +226,7 @@ internal constructor(
                                         if (packId != null) {
                                             tracker.loaded(playerId, packId)
                                             sidebarTracker.get()?.loaded(playerId, packId)
+                                            dialogueTracker.get()?.loaded(playerId, packId)
                                             hudTracker.get()?.loaded(playerId, packId)
                                         }
                                         true
@@ -216,6 +237,7 @@ internal constructor(
                                         if (packId != null) {
                                             tracker.failed(playerId, packId)
                                             sidebarTracker.get()?.failed(playerId, packId)
+                                            dialogueTracker.get()?.failed(playerId, packId)
                                             hudTracker.get()?.failed(playerId, packId)
                                         }
                                         true
@@ -224,6 +246,7 @@ internal constructor(
                             ObservedPackStatus(initial, publishAppearance)
                         } ?: return@statusObserver
                     try {
+                        publishDialogueStyle(player)
                         if (observed.publishAppearance)
                             captureChatStyle(player)?.let { chatStyleBridge.send(player, it) }
                         publishSidebarStyle(player)
@@ -279,6 +302,7 @@ internal constructor(
                                 if (initialDeadlines[playerId]?.player !== event.player()) {
                                     appearanceTracker.get()?.reset(playerId)
                                     sidebarTracker.get()?.reset(playerId)
+                                    dialogueTracker.get()?.reset(playerId)
                                     hudTracker.get()?.reset(playerId)
                                 }
                                 initialDeadlines.put(playerId, initial)?.handle
@@ -320,6 +344,7 @@ internal constructor(
                     initial,
                     appearanceTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                     sidebarTracker.get()?.disconnectSnapshot(event.player.uniqueId),
+                    dialogueTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                 )
             } ?: return
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
@@ -328,6 +353,7 @@ internal constructor(
         } finally {
             configurationWaiter.forget(event.player.uniqueId, disconnected.initial.completion)
         }
+        disconnected.dialogueAppearance?.let { dialogueStyleBridge.send(event.player, it) }
         disconnected.appearance?.let { chatStyleBridge.send(event.player, it) }
         disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
     }
@@ -350,7 +376,8 @@ internal constructor(
     fun onPluginMessage(event: PluginMessageEvent) {
         if (
             event.identifier == chatStyleBridge.identifier ||
-                event.identifier == sidebarStyleBridge.identifier
+                event.identifier == sidebarStyleBridge.identifier ||
+                event.identifier == dialogueStyleBridge.identifier
         ) {
             event.result = PluginMessageEvent.ForwardResult.handled()
         }
@@ -366,11 +393,13 @@ internal constructor(
         coordinator.clear()
         appearanceTracker.getAndSet(null)?.clear()
         sidebarTracker.getAndSet(null)?.clear()
+        dialogueTracker.getAndSet(null)?.clear()
         hudTracker.getAndSet(null)?.clear()
         hudRegistry.unregister()
         appearanceRegistry.unregister()
         chatStyleBridge.unregister()
         sidebarStyleBridge.unregister()
+        dialogueStyleBridge.unregister()
         snapshotDeadline.close()
         synchronized(deadlines) {
             initialDeadlines.values.forEach { it.handle?.close() }
@@ -396,6 +425,7 @@ internal constructor(
     }
 
     private fun publishChatStyle(player: com.velocitypowered.api.proxy.Player) {
+        publishDialogueStyle(player)
         val snapshot = captureChatStyle(player) ?: return
         chatStyleBridge.send(player, snapshot)
         publishSidebarStyle(player)
@@ -414,6 +444,21 @@ internal constructor(
                 }
             } ?: return
         sidebarStyleBridge.send(player, snapshot)
+    }
+
+    private fun publishDialogueStyle(player: com.velocitypowered.api.proxy.Player) {
+        val snapshot =
+            synchronized(deadlines) {
+                if (stopped.get() || initialDeadlines[player.uniqueId]?.player !== player)
+                    return@synchronized null
+                dialogueTracker.get()?.snapshot(player.uniqueId) {
+                    DialogueAppearanceEnvironment.eligible(
+                        sidebarProtocol(player.uniqueId),
+                        platformLookup.isBedrock(player.uniqueId),
+                    )
+                }
+            } ?: return
+        dialogueStyleBridge.send(player, snapshot)
     }
 
     private fun captureChatStyle(
@@ -592,6 +637,7 @@ internal constructor(
         val initial: InitialDeadline,
         val appearance: PlayerChatStyleSnapshot?,
         val sidebarAppearance: PlayerChatStyleSnapshot?,
+        val dialogueAppearance: PlayerChatStyleSnapshot?,
     )
 
     private companion object {

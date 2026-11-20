@@ -254,6 +254,37 @@ class GroundsResourcePacksPluginTest {
         assertFalse(serverPacket.result.isAllowed)
     }
 
+    @Test
+    fun `dialogue channel blocks client and server supplied packets`() {
+        val bridge = RecordingPlayerChatStyleBridge(channel = DialogueAppearanceEnvironment.CHANNEL)
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready()),
+                FakeClientFactory(),
+                dialogueStyleBridge = bridge,
+            )
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val server =
+            Proxy.newProxyInstance(
+                ServerConnection::class.java.classLoader,
+                arrayOf(ServerConnection::class.java),
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "equals" -> proxy === args?.singleOrNull()
+                    "hashCode" -> 1
+                    else -> defaultValue(method.returnType)
+                }
+            } as ServerConnection
+
+        val clientPacket = PluginMessageEvent(online, server, bridge.identifier, byteArrayOf(1))
+        val serverPacket = PluginMessageEvent(server, online, bridge.identifier, byteArrayOf(1))
+        plugin.onPluginMessage(clientPacket)
+        plugin.onPluginMessage(serverPacket)
+
+        assertFalse(clientPacket.result.isAllowed)
+        assertFalse(serverPacket.result.isAllowed)
+    }
+
     // Break caught: sending outside the client's configuration state can bypass the configured
     // prompt screen.
     @Test
@@ -1395,6 +1426,111 @@ class GroundsResourcePacksPluginTest {
     }
 
     @Test
+    fun `dialogue readiness follows exact loaded platform pack and revokes on replacement and decline`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val bridge = RecordingPlayerChatStyleBridge()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "DIALOGUE_PACK_SHA1" to "1".repeat(40),
+                        "DIALOGUE_ASSET_PIN" to "a".repeat(64),
+                    ),
+                sidebarProtocol = { 777 },
+                platformLookup = ChatPlatformLookup { false },
+                dialogueStyleBridge = bridge,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        val client = clients.created.single()
+        client.emit(
+            readyState(initial, snapshot(initial, packs = listOf(resolvedPack(role = "platform"))))
+        )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        assertFalse(bridge.snapshots.last().second.ready)
+        terminalStatus(events, online)
+        assertTrue(bridge.snapshots.last().second.ready)
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertTrue(bridge.snapshots.last().second.ready)
+        client.emit(
+            readyState(
+                initial,
+                snapshot(initial, sequence = 2, packs = listOf(resolvedPack(role = "platform"))),
+            )
+        )
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, previousServer()))
+        assertFalse(bridge.snapshots.last().second.ready)
+        terminalStatus(events, online)
+        assertTrue(bridge.snapshots.last().second.ready)
+        packStatus(events, online, PlayerResourcePackStatusEvent.Status.DECLINED)
+        assertFalse(bridge.snapshots.last().second.ready)
+        terminalStatus(events, online)
+        packStatus(events, online, PlayerResourcePackStatusEvent.Status.FAILED_DOWNLOAD)
+        assertFalse(bridge.snapshots.last().second.ready)
+        assertTrue(
+            bridge.snapshots.zipWithNext().all { (a, b) -> b.second.revision > a.second.revision }
+        )
+        plugin.onShutdown(ProxyShutdownEvent())
+    }
+
+    @Test
+    fun `disconnect cannot clear dialogue readiness established by a replacement connection`() {
+        val initial = settings()
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val old = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val replacement = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        val dialogue = RecordingPlayerChatStyleBridge()
+        var onChatSend: () -> Unit = {}
+        val chat =
+            object : PlayerChatStyleBridge by NoopPlayerChatStyleBridge {
+                override fun send(player: Player, snapshot: PlayerChatStyleSnapshot) = onChatSend()
+            }
+        val plugin =
+            plugin(
+                FakeConfigGateway(ConfigRegistrationResult.ready(), initial),
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "DIALOGUE_PACK_SHA1" to "1".repeat(40),
+                        "DIALOGUE_ASSET_PIN" to "a".repeat(64),
+                    ),
+                sidebarProtocol = { 777 },
+                platformLookup = ChatPlatformLookup { false },
+                chatStyleBridge = chat,
+                dialogueStyleBridge = dialogue,
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(old, null))
+        terminalStatus(events, old)
+        assertTrue(dialogue.snapshots.last().second.ready)
+        onChatSend = {
+            onChatSend = {}
+            plugin.onPlayerConfiguration(PlayerConfigurationEvent(replacement, null))
+            terminalStatus(events, replacement)
+        }
+        plugin.onDisconnect(DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN))
+        plugin.onServerPostConnect(ServerPostConnectEvent(replacement, null))
+        assertTrue(dialogue.snapshots.last().second.ready)
+    }
+
+    @Test
     fun `disconnect cannot clear sidebar readiness established by a replacement connection`() {
         val initial = settings()
         val clients = FakeClientFactory()
@@ -1848,6 +1984,7 @@ class GroundsResourcePacksPluginTest {
         appearanceRegistry: PlayerChatAppearanceRegistry = NoopPlayerChatAppearanceRegistry,
         chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+        dialogueStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         sidebarProtocol: (UUID) -> Int? = { appearanceProtocol(it)?.protocol },
         hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
         appliedHashes: (UUID) -> Set<String> = { emptySet() },
@@ -1866,6 +2003,7 @@ class GroundsResourcePacksPluginTest {
             appearanceRegistry = appearanceRegistry,
             chatStyleBridge = chatStyleBridge,
             sidebarStyleBridge = sidebarStyleBridge,
+            dialogueStyleBridge = dialogueStyleBridge,
             sidebarProtocol = sidebarProtocol,
             hudRegistry = hudRegistry,
             appliedHashes = appliedHashes,
@@ -1883,12 +2021,12 @@ class GroundsResourcePacksPluginTest {
     }
 }
 
-internal class RecordingPlayerChatStyleBridge(var connected: Boolean = true) :
-    PlayerChatStyleBridge {
+internal class RecordingPlayerChatStyleBridge(
+    var connected: Boolean = true,
+    channel: String = PlayerChatStylePayload.CHANNEL,
+) : PlayerChatStyleBridge {
     override val identifier =
-        com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier.from(
-            PlayerChatStylePayload.CHANNEL
-        )
+        com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier.from(channel)
     val snapshots = mutableListOf<Pair<UUID, PlayerChatStyleSnapshot>>()
     var registrations = 0
     var unregistrations = 0
