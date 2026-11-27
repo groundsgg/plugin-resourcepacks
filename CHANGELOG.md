@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.3.0...v1.4.0) (2026-11-27)
+
+
+### Features
+
+* gate system badge rendering on the loaded pack ([#43](https://github.com/groundsgg/plugin-resourcepacks/issues/43)) ([5cc47e6](https://github.com/groundsgg/plugin-resourcepacks/commit/5cc47e6ece8d03c2a01e19f9f23f860cfd4d452e))
+
 ## [1.3.0](https://github.com/groundsgg/plugin-resourcepacks/compare/v1.2.0...v1.3.0) (2026-11-20)
 
 
