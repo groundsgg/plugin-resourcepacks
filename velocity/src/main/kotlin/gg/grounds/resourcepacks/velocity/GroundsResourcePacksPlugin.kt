@@ -17,6 +17,8 @@ import com.velocitypowered.api.proxy.ProxyServer
 import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
 import gg.grounds.i18n.Translations
+import gg.grounds.proxy.api.PlayerSystemBadgeQuery
+import gg.grounds.proxy.api.ProxyServiceRegistry
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
 import gg.grounds.resourcepacks.client.PackSetSelection
@@ -63,6 +65,9 @@ internal constructor(
     private val chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
     private val dialogueStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+    private val systemBadgeStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+    private val registerSystemBadges: (PlayerSystemBadgeQuery) -> Unit = {},
+    private val unregisterSystemBadges: () -> Unit = {},
     private val sidebarProtocol: (java.util.UUID) -> Int? = { appearanceProtocol(it)?.protocol },
     private val hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
     private val appliedHashes: (java.util.UUID) -> Set<String> = { emptySet() },
@@ -114,6 +119,18 @@ internal constructor(
                     )
                 },
             ),
+        systemBadgeStyleBridge =
+            VelocityPlayerChatStyleBridge(
+                registerChannel = { proxy.channelRegistrar.register(it) },
+                unregisterChannel = { proxy.channelRegistrar.unregister(it) },
+                channelId = "grounds:system_badges",
+            ),
+        registerSystemBadges = {
+            ProxyServiceRegistry.register(PlayerSystemBadgeQuery::class.java, it)
+        },
+        unregisterSystemBadges = {
+            ProxyServiceRegistry.unregister(PlayerSystemBadgeQuery::class.java)
+        },
         sidebarStyleBridge =
             VelocityPlayerChatStyleBridge(
                 registerChannel = { proxy.channelRegistrar.register(it) },
@@ -132,6 +149,7 @@ internal constructor(
     private val configurationWaiter = ResourcePackConfigurationWaiter()
     private val appearanceTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val dialogueTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
+    private val systemBadgeTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val sidebarTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val hudTracker = AtomicReference<PlayerChatAppearanceTracker?>(null)
     private val messages =
@@ -153,6 +171,7 @@ internal constructor(
                     appearanceTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     sidebarTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     dialogueTracker.get()?.offered(player.uniqueId, prepared.packHashes)
+                    systemBadgeTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     hudTracker.get()?.offered(player.uniqueId, prepared.packHashes)
                     publishChatStyle(player)
                     log.info(
@@ -183,6 +202,16 @@ internal constructor(
         dialogueTracker.set(
             PlayerChatAppearanceTracker(DialogueAppearanceEnvironment.from(deployment).hashes)
         )
+        val badgeTracker =
+            PlayerChatAppearanceTracker(
+                ChatAppearanceEnvironment.from(deployment, "SYSTEM_BADGE_PACK_SHA1S").fontPackSha1s
+            )
+        systemBadgeTracker.set(badgeTracker)
+        registerSystemBadges(
+            PlayerSystemBadgeQuery { playerId ->
+                isBadgeClient(playerId) && badgeTracker.chatFontReady(playerId)
+            }
+        )
         sidebarTracker.set(
             PlayerChatAppearanceTracker(SidebarAppearanceEnvironment.from(deployment))
         )
@@ -204,6 +233,7 @@ internal constructor(
         chatStyleBridge.register()
         sidebarStyleBridge.register()
         dialogueStyleBridge.register()
+        systemBadgeStyleBridge.register()
         val definition = resourcePackSettingsDefinition(bootstrapPackSetChannel(deployment))
         val deploymentEnvironment = ResourcePackEnvironment.from(deployment).deploymentEnvironment
         val listener =
@@ -227,6 +257,7 @@ internal constructor(
                                             tracker.loaded(playerId, packId)
                                             sidebarTracker.get()?.loaded(playerId, packId)
                                             dialogueTracker.get()?.loaded(playerId, packId)
+                                            systemBadgeTracker.get()?.loaded(playerId, packId)
                                             hudTracker.get()?.loaded(playerId, packId)
                                         }
                                         true
@@ -238,6 +269,7 @@ internal constructor(
                                             tracker.failed(playerId, packId)
                                             sidebarTracker.get()?.failed(playerId, packId)
                                             dialogueTracker.get()?.failed(playerId, packId)
+                                            systemBadgeTracker.get()?.failed(playerId, packId)
                                             hudTracker.get()?.failed(playerId, packId)
                                         }
                                         true
@@ -249,6 +281,7 @@ internal constructor(
                         publishDialogueStyle(player)
                         if (observed.publishAppearance)
                             captureChatStyle(player)?.let { chatStyleBridge.send(player, it) }
+                        if (observed.publishAppearance) publishSystemBadgeStyle(player)
                         publishSidebarStyle(player)
                     } finally {
                         configurationWaiter.onStatus(
@@ -303,6 +336,7 @@ internal constructor(
                                     appearanceTracker.get()?.reset(playerId)
                                     sidebarTracker.get()?.reset(playerId)
                                     dialogueTracker.get()?.reset(playerId)
+                                    systemBadgeTracker.get()?.reset(playerId)
                                     hudTracker.get()?.reset(playerId)
                                 }
                                 initialDeadlines.put(playerId, initial)?.handle
@@ -345,6 +379,7 @@ internal constructor(
                     appearanceTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                     sidebarTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                     dialogueTracker.get()?.disconnectSnapshot(event.player.uniqueId),
+                    systemBadgeTracker.get()?.disconnectSnapshot(event.player.uniqueId),
                 )
             } ?: return
         coordinator.forget(event.player.uniqueId, disconnected.initial.session)
@@ -355,6 +390,7 @@ internal constructor(
         }
         disconnected.dialogueAppearance?.let { dialogueStyleBridge.send(event.player, it) }
         disconnected.appearance?.let { chatStyleBridge.send(event.player, it) }
+        disconnected.systemBadgeAppearance?.let { systemBadgeStyleBridge.send(event.player, it) }
         disconnected.sidebarAppearance?.let { sidebarStyleBridge.send(event.player, it) }
     }
 
@@ -377,7 +413,8 @@ internal constructor(
         if (
             event.identifier == chatStyleBridge.identifier ||
                 event.identifier == sidebarStyleBridge.identifier ||
-                event.identifier == dialogueStyleBridge.identifier
+                event.identifier == dialogueStyleBridge.identifier ||
+                event.identifier == systemBadgeStyleBridge.identifier
         ) {
             event.result = PluginMessageEvent.ForwardResult.handled()
         }
@@ -394,12 +431,15 @@ internal constructor(
         appearanceTracker.getAndSet(null)?.clear()
         sidebarTracker.getAndSet(null)?.clear()
         dialogueTracker.getAndSet(null)?.clear()
+        systemBadgeTracker.getAndSet(null)?.clear()
+        unregisterSystemBadges()
         hudTracker.getAndSet(null)?.clear()
         hudRegistry.unregister()
         appearanceRegistry.unregister()
         chatStyleBridge.unregister()
         sidebarStyleBridge.unregister()
         dialogueStyleBridge.unregister()
+        systemBadgeStyleBridge.unregister()
         snapshotDeadline.close()
         synchronized(deadlines) {
             initialDeadlines.values.forEach { it.handle?.close() }
@@ -429,6 +469,22 @@ internal constructor(
         val snapshot = captureChatStyle(player) ?: return
         chatStyleBridge.send(player, snapshot)
         publishSidebarStyle(player)
+        publishSystemBadgeStyle(player)
+    }
+
+    private fun isBadgeClient(playerId: java.util.UUID): Boolean =
+        appearanceProtocol(playerId) != null && platformLookup.isBedrock(playerId) == false
+
+    private fun publishSystemBadgeStyle(player: com.velocitypowered.api.proxy.Player) {
+        val snapshot =
+            synchronized(deadlines) {
+                if (stopped.get() || initialDeadlines[player.uniqueId]?.player !== player)
+                    return@synchronized null
+                systemBadgeTracker.get()?.snapshot(player.uniqueId) {
+                    isBadgeClient(player.uniqueId)
+                }
+            } ?: return
+        systemBadgeStyleBridge.send(player, snapshot)
     }
 
     private fun publishSidebarStyle(player: com.velocitypowered.api.proxy.Player) {
@@ -638,6 +694,7 @@ internal constructor(
         val appearance: PlayerChatStyleSnapshot?,
         val sidebarAppearance: PlayerChatStyleSnapshot?,
         val dialogueAppearance: PlayerChatStyleSnapshot?,
+        val systemBadgeAppearance: PlayerChatStyleSnapshot?,
     )
 
     private companion object {

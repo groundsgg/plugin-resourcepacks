@@ -12,12 +12,15 @@ internal data class ChatAppearanceEnvironment(val fontPackSha1s: Set<String>) {
     companion object {
         private val SHA1 = Regex("[0-9a-f]{40}")
 
-        fun from(environment: Map<String, String>): ChatAppearanceEnvironment {
-            val raw = environment["CHAT_FONT_PACK_SHA1S"].orEmpty()
+        fun from(
+            environment: Map<String, String>,
+            key: String = "CHAT_FONT_PACK_SHA1S",
+        ): ChatAppearanceEnvironment {
+            val raw = environment[key].orEmpty()
             if (raw.isBlank()) return ChatAppearanceEnvironment(emptySet())
             val values = raw.split(',').map(String::trim)
             require(values.all(SHA1::matches)) {
-                "CHAT_FONT_PACK_SHA1S must contain only comma-separated lowercase SHA-1 values"
+                "$key must contain only comma-separated lowercase SHA-1 values"
             }
             return ChatAppearanceEnvironment(values.toSet())
         }
