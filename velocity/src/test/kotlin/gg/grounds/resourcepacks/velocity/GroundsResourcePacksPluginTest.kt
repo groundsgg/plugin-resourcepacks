@@ -20,6 +20,7 @@ import gg.grounds.config.ConfigRegistrationResult
 import gg.grounds.config.ConfigStartupMode
 import gg.grounds.generated.BuildInfo
 import gg.grounds.proxy.api.PlayerChatAppearanceQuery
+import gg.grounds.proxy.api.PlayerSystemBadgeQuery
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetClientStatus
 import gg.grounds.resourcepacks.client.PackSetSelection
@@ -1969,6 +1970,56 @@ class GroundsResourcePacksPluginTest {
         instance.onShutdown(ProxyShutdownEvent())
     }
 
+    @Test
+    fun `badges require a separately allowlisted loaded pack for a known Java client`() {
+        val initial = settings()
+        val gateway = FakeConfigGateway(ConfigRegistrationResult.ready(), initial)
+        val clients = FakeClientFactory()
+        val events = FakeEventRegistry()
+        val bridge = RecordingPlayerChatStyleBridge()
+        val online = player("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        lateinit var badgeQuery: PlayerSystemBadgeQuery
+        var bedrock: Boolean? = false
+        val plugin =
+            plugin(
+                gateway,
+                clients,
+                events = events,
+                environment =
+                    mapOf(
+                        "GROUNDS_ENVIRONMENT" to "stage",
+                        "CHAT_FONT_PACK_SHA1S" to "2".repeat(40),
+                        "SYSTEM_BADGE_PACK_SHA1S" to "1".repeat(40),
+                    ),
+                appearanceProtocol = { ProtocolVersion.MINECRAFT_1_21_9 },
+                platformLookup = ChatPlatformLookup { bedrock },
+                systemBadgeStyleBridge = bridge,
+                registerSystemBadges = { badgeQuery = it },
+            )
+        plugin.onInitialize(ProxyInitializeEvent())
+        clients.created
+            .single()
+            .emit(
+                readyState(
+                    initial,
+                    snapshot(initial, packs = listOf(resolvedPack(role = "platform"))),
+                )
+            )
+        plugin.onPlayerConfiguration(PlayerConfigurationEvent(online, null))
+        assertFalse(badgeQuery.systemBadgesReady(online.uniqueId))
+
+        terminalStatus(events, online)
+        assertTrue(badgeQuery.systemBadgesReady(online.uniqueId))
+        assertEquals(true, bridge.snapshots.last().second.ready)
+
+        bedrock = null
+        assertFalse(badgeQuery.systemBadgesReady(online.uniqueId))
+        bedrock = true
+        assertFalse(badgeQuery.systemBadgesReady(online.uniqueId))
+        plugin.onServerPostConnect(ServerPostConnectEvent(online, null))
+        assertEquals(false, bridge.snapshots.last().second.ready)
+    }
+
     private fun plugin(
         gateway: ResourcePackConfigGateway,
         clients: FakeClientFactory,
@@ -1985,6 +2036,8 @@ class GroundsResourcePacksPluginTest {
         chatStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         sidebarStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
         dialogueStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+        systemBadgeStyleBridge: PlayerChatStyleBridge = NoopPlayerChatStyleBridge,
+        registerSystemBadges: (PlayerSystemBadgeQuery) -> Unit = {},
         sidebarProtocol: (UUID) -> Int? = { appearanceProtocol(it)?.protocol },
         hudRegistry: PlayerHudAppearanceRegistry = NoopPlayerHudAppearanceRegistry,
         appliedHashes: (UUID) -> Set<String> = { emptySet() },
@@ -2004,6 +2057,8 @@ class GroundsResourcePacksPluginTest {
             chatStyleBridge = chatStyleBridge,
             sidebarStyleBridge = sidebarStyleBridge,
             dialogueStyleBridge = dialogueStyleBridge,
+            systemBadgeStyleBridge = systemBadgeStyleBridge,
+            registerSystemBadges = registerSystemBadges,
             sidebarProtocol = sidebarProtocol,
             hudRegistry = hudRegistry,
             appliedHashes = appliedHashes,
